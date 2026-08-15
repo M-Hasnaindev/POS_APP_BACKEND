@@ -2,27 +2,23 @@ const express = require("express");
 const router = express.Router();
 
 const {
+  resolveTenant,
   login,
   getUserDetail,
   logout,
   getAccountInfo,
   getCompanyLog,
-  getAccountName
+  getAccountName,
 } = require("../controllers/authController");
-
 const { verifyToken } = require("../middleware/authMiddleware");
 
-// Public routes
+router.post("/tenant/resolve", resolveTenant);
 router.post("/login", login);
 
-// Protected routes (require authentication)
 router.get("/me", verifyToken, getUserDetail);
 router.post("/logout", verifyToken, logout);
-
-// New APIs - can be called after login with token
 router.get("/account-info", verifyToken, getAccountInfo);
 router.get("/company-log", verifyToken, getCompanyLog);
-
-router.get("/account-name", getAccountName);
+router.get("/account-name", verifyToken, getAccountName);
 
 module.exports = router;

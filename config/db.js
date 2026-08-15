@@ -1,36 +1,53 @@
 const sql = require("mssql");
-require("dotenv").config();
+const { getTenantById } = require("./tenants");
 
-const config = {
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  server: process.env.DB_SERVER,
-  database: process.env.DB_DATABASE,
-  port: parseInt(process.env.DB_PORT),
+const pools = new Map();
 
-  options: {
-    encrypt: false,
-    trustServerCertificate: true,
-  },
+async function getPoolForTenant(tenantId) {
+  const tenant = getTenantById(tenantId);
+  if (!tenant) {
+    const error = new Error("Invalid tenant");
+    error.code = "INVALID_TENANT";
+    throw error;
+  }
 
-  pool: {
-    max: 10,
-    min: 0,
-    idleTimeoutMillis: 30000,
-  },
+  const existing = pools.get(tenantId);
+  if (existing) return existing;
 
-  requestTimeout: 300000, // 🔥 5 minutes (IMPORTANT)
-  connectionTimeout: 30000, // optional
-};
+  const connectionPromise = new sql.ConnectionPool(tenant.config)
+    .connect()
+    .then((pool) => {
+      console.log(`✅ MSSQL Connected [${tenant.id}]`);
+      pool.on("error", (err) => {
+        console.error(`❌ MSSQL Pool Error [${tenant.id}]:`, err.message);
+      });
+      return pool;
+    })
+    .catch((err) => {
+      pools.delete(tenantId);
+      console.error(`❌ DB Error [${tenant.id}]:`, err.message);
+      throw err;
+    });
 
-const pool = new sql.ConnectionPool(config)
-  .connect()
-  .then(pool => {
-    console.log("✅ MSSQL Connected");
-    return pool;
-  })
-  .catch(err => {
-    console.log("❌ DB Error:", err);
-  });
+  pools.set(tenantId, connectionPromise);
+  return connectionPromise;
+}
 
-module.exports = { sql, pool };
+async function testTenantConnection(tenantId) {
+  const pool = await getPoolForTenant(tenantId);
+  await pool.request().query("SELECT 1 AS ok");
+  return true;
+}
+
+async function closeAllPools() {
+  const currentPools = Array.from(pools.values());
+  pools.clear();
+  await Promise.allSettled(
+    currentPools.map(async (poolPromise) => {
+      const pool = await poolPromise;
+      if (pool?.connected) await pool.close();
+    }),
+  );
+}
+
+module.exports = { sql, getPoolForTenant, testTenantConnection, closeAllPools };

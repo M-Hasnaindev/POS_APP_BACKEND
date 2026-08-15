@@ -1,22 +1,86 @@
-const { sql, pool } = require("../config/db");
 const jwt = require("jsonwebtoken");
+const { sql, getPoolForTenant, testTenantConnection } = require("../config/db");
+const {
+  resolveTenantByKey,
+  getTenantById,
+  getPublicTenant,
+} = require("../config/tenants");
+
+function signTenantToken(tenantId) {
+  return jwt.sign(
+    { type: "tenant", tenantId },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.TENANT_TOKEN_EXPIRES_IN || "30d" },
+  );
+}
+
+function verifyTenantToken(token) {
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  if (decoded.type !== "tenant" || !decoded.tenantId || !getTenantById(decoded.tenantId)) {
+    throw new Error("Invalid tenant token");
+  }
+  return decoded;
+}
 
 // ============================================
-// LOGIN (PinCode based)
+// RESOLVE COMPANY KEY -> TENANT
+// ============================================
+exports.resolveTenant = async (req, res) => {
+  try {
+    const companyKey = String(req.body?.companyKey || "").trim();
+    if (!companyKey) {
+      return res.status(400).json({ success: false, message: "Company key required" });
+    }
+
+    const tenant = resolveTenantByKey(companyKey);
+    if (!tenant) {
+      return res.status(401).json({ success: false, message: "Invalid company key" });
+    }
+
+    // Fail early if the configured database cannot be reached.
+    await testTenantConnection(tenant.id);
+
+    return res.json({
+      success: true,
+      tenant: getPublicTenant(tenant),
+      tenantToken: signTenantToken(tenant.id),
+    });
+  } catch (err) {
+    console.error("TENANT RESOLVE ERROR:", err.message);
+    return res.status(503).json({
+      success: false,
+      message: "Company database is currently unavailable",
+    });
+  }
+};
+
+// ============================================
+// LOGIN (PinCode based + tenant binding)
 // ============================================
 exports.login = async (req, res) => {
   try {
-    const { pinCode } = req.body;
+    const pinCode = String(req.body?.pinCode || "").trim();
+    const tenantToken = String(req.body?.tenantToken || "").trim();
+    const hasSelectedUserId = Object.prototype.hasOwnProperty.call(req.body || {}, "userId");
+    const hasSelectedCompanyCode = Object.prototype.hasOwnProperty.call(req.body || {}, "companyCode");
+    const selectedUserId = String(req.body?.userId ?? "").trim();
+    const selectedCompanyCode = String(req.body?.companyCode ?? "").trim();
 
     if (!pinCode) {
-      return res.status(400).json({
-        success: false,
-        message: "PinCode required",
-      });
+      return res.status(400).json({ success: false, message: "PinCode required" });
+    }
+    if (!tenantToken) {
+      return res.status(400).json({ success: false, message: "Company selection required" });
     }
 
-    const db = await pool;
+    let tenantPayload;
+    try {
+      tenantPayload = verifyTenantToken(tenantToken);
+    } catch {
+      return res.status(401).json({ success: false, message: "Company session expired. Enter company key again." });
+    }
 
+    const db = await getPoolForTenant(tenantPayload.tenantId);
     const result = await db.request()
       .input("pinCode", sql.VarChar, pinCode)
       .query(`
@@ -28,46 +92,71 @@ exports.login = async (req, res) => {
         WHERE PinCode = @pinCode
       `);
 
-    // No user found
     if (result.recordset.length === 0) {
-      return res.status(401).json({
+      return res.status(401).json({ success: false, message: "Invalid PinCode" });
+    }
+
+    let matchingUsers = result.recordset;
+
+    if (hasSelectedUserId || hasSelectedCompanyCode) {
+      if (!hasSelectedUserId || !hasSelectedCompanyCode || !selectedUserId) {
+        return res.status(400).json({
+          success: false,
+          message: "Both user and company selection are required",
+        });
+      }
+
+      matchingUsers = matchingUsers.filter(
+        (item) =>
+          String(item.UserID ?? "").trim() === selectedUserId &&
+          String(item.CompanyCode ?? "").trim() === selectedCompanyCode,
+      );
+
+      if (matchingUsers.length === 0) {
+        return res.status(401).json({
+          success: false,
+          message: "Selected account does not match this PIN",
+        });
+      }
+    }
+
+    if (matchingUsers.length > 1) {
+      return res.status(409).json({
         success: false,
-        message: "Invalid PinCode",
+        code: "USER_SELECTION_REQUIRED",
+        message: "Select the company account you want to use",
+        users: matchingUsers.map((item) => ({
+          userId: String(item.UserID),
+          companyCode: String(item.CompanyCode ?? "").trim(),
+          displayName: String(item.UserName || item.ShortName || item.UserID),
+        })),
       });
     }
 
-    // Duplicate pin issue
-    if (result.recordset.length > 1) {
-      return res.status(400).json({
-        success: false,
-        message: "Duplicate PinCode found. Contact admin.",
-      });
-    }
-
-    const user = result.recordset[0];
-
-    // Generate JWT Token
+    const user = matchingUsers[0];
     const token = jwt.sign(
-      { userId: user.UserID },
+      {
+        type: "access",
+        userId: user.UserID,
+        companyCode: user.CompanyCode,
+        tenantId: tenantPayload.tenantId,
+      },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN }
+      { expiresIn: process.env.JWT_EXPIRES_IN || "12h" },
     );
 
     delete user.PinCode;
 
-    res.json({
+    return res.json({
       success: true,
       message: "Login success",
       token,
+      tenant: getPublicTenant(getTenantById(tenantPayload.tenantId)),
       user,
     });
-
   } catch (err) {
-    console.log(err);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    console.error("LOGIN ERROR:", err.message);
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
@@ -76,8 +165,7 @@ exports.login = async (req, res) => {
 // ============================================
 exports.getUserDetail = async (req, res) => {
   try {
-    const db = await pool;
-
+    const db = await getPoolForTenant(req.user.tenantId);
     const result = await db.request()
       .input("userId", sql.VarChar, req.user.userId)
       .query(`
@@ -90,133 +178,59 @@ exports.getUserDetail = async (req, res) => {
       `);
 
     if (result.recordset.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
+      return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    res.json({
-      success: true,
-      user: result.recordset[0],
-    });
-
+    return res.json({ success: true, user: result.recordset[0] });
   } catch (err) {
-    res.status(500).json({ success: false, message: "Server error" });
+    console.error("GET USER ERROR:", err.message);
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
-// ============================================
-// LOGOUT
-// ============================================
-exports.logout = async (req, res) => {
-  try {
-    res.json({
-      success: true,
-      message: "Logout successful (remove token from frontend)",
-    });
-  } catch (err) {
-    res.status(500).json({ success: false });
-  }
+exports.logout = async (_req, res) => {
+  return res.json({ success: true, message: "Logout successful" });
 };
 
-// ============================================
-// ACCOUNT INFO API (NEW)
-// Returns all account information
-// ============================================
 exports.getAccountInfo = async (req, res) => {
   try {
-    const db = await pool;
-
-    // Query exactly as provided - do NOT modify
-    const result = await db.request().query(`
-      Select * From AccountInfo
-    `);
-
-    res.json({
-      success: true,
-      data: result.recordset,
-      count: result.recordset.length,
-    });
-
+    const db = await getPoolForTenant(req.user.tenantId);
+    const result = await db.request().query("SELECT * FROM AccountInfo");
+    return res.json({ success: true, data: result.recordset, count: result.recordset.length });
   } catch (err) {
-    console.log("ACCOUNT INFO ERROR:", err);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: err.message,
-    });
+    console.error("ACCOUNT INFO ERROR:", err.message);
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
-// ============================================
-// COMPANY LOG API (NEW)
-// Returns FromDate and ToDate from Defaults
-// ============================================
 exports.getCompanyLog = async (req, res) => {
   try {
-    const db = await pool;
-
-    // Get companyId from query params or use empty string
-    const companyId = req.query.companyId || '';
-
-    // Query exactly as provided - do NOT modify
+    const db = await getPoolForTenant(req.user.tenantId);
+    const companyId = String(req.query.companyId || req.user.companyCode || "");
     const result = await db.request()
       .input("companyId", sql.VarChar, companyId)
-      .query(`
-        SELECT FromDate, ToDate FROM Defaults Where CompanyID = @companyId
-      `);
+      .query("SELECT FromDate, ToDate FROM Defaults WHERE CompanyID = @companyId");
 
-    // Return first record if exists
     if (result.recordset.length > 0) {
-      res.json({
-        success: true,
-        data: result.recordset[0],
-      });
-    } else {
-      res.json({
-        success: true,
-        data: null,
-        message: "No company log found",
-      });
+      return res.json({ success: true, data: result.recordset[0] });
     }
-
+    return res.json({ success: true, data: null, message: "No company log found" });
   } catch (err) {
-    console.log("COMPANY LOG ERROR:", err);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: err.message,
-    });
+    console.error("COMPANY LOG ERROR:", err.message);
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
-// GET ACCOUNT NAME (Auto Fetch API)
 exports.getAccountName = async (req, res) => {
   try {
-    const request = (await pool).request();
-
-    const result = await request.query(`
-      SELECT AccountName
-      FROM AccountInfo
-    `);
-
+    const db = await getPoolForTenant(req.user.tenantId);
+    const result = await db.request().query("SELECT AccountName FROM AccountInfo");
     if (result.recordset.length === 0) {
-      return res.status(404).json({
-        msg: "No Account Found"
-      });
+      return res.status(404).json({ msg: "No Account Found" });
     }
-
-    console.log("AccountName fetched successfully");
-
-    return res.json({
-      accounts: result.recordset
-    });
-
+    return res.json({ accounts: result.recordset });
   } catch (err) {
-    console.log("GetAccountName error:", err);
-    return res.status(500).json({
-      msg: "Server Error"
-    });
+    console.error("GetAccountName error:", err.message);
+    return res.status(500).json({ msg: "Server Error" });
   }
 };

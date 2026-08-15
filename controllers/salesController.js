@@ -6,7 +6,15 @@
 // 2. getBarcodes → LAST YEAR + CURRENT YEAR (100K+ records) instead of current year only
 // ============================================
 
-const { sql, pool } = require("../config/db");
+const { sql, getPoolForTenant } = require("../config/db");
+
+function parseDateOnly(value, endOfDay = false) {
+  if (!value) return null;
+  const text = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const date = new Date(`${text}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
 
 // ============================================
 // 1. SALES REPORT API - COMPLETE LAST YEAR (12 MONTHS) - FIX APPLIED
@@ -16,7 +24,7 @@ const { sql, pool } = require("../config/db");
 // ============================================
 const getSalesReport = async (req, res) => {
   try {
-    const connection = await pool;
+    const connection = await getPoolForTenant(req.user.tenantId);
 
     // DATE RANGE: COMPLETE LAST YEAR (12 MONTHS) - FIX APPLIED
     const now = new Date();
@@ -244,25 +252,34 @@ ORDER BY BillDate DESC
 // ============================================
 const getSalesReportAll = async (req, res) => {
   try {
-    const connection = await pool;
+    const connection = await getPoolForTenant(req.user.tenantId);
 
     const { fromDate, toDate, page, pageSize } = req.query;
 
-    const currentPage = parseInt(page) || 1;
-    const recordsPerPage = Math.min(parseInt(pageSize) || 5000, 10000);
+    const currentPage = Math.max(1, parseInt(page, 10) || 1);
+    const recordsPerPage = Math.max(100, Math.min(parseInt(pageSize, 10) || 5000, 10000));
     const offset = (currentPage - 1) * recordsPerPage;
 
     console.log(`📊 SALES REPORT ALL - Page ${currentPage}, PageSize ${recordsPerPage}, Offset ${offset}`);
 
-    let dateCondition = "";
-    if (fromDate && toDate) {
-      dateCondition = `A.TranDate BETWEEN '${fromDate}' AND '${toDate}' AND`;
-    } else if (fromDate) {
-      const currentDate = new Date().toISOString().split('T')[0] + ' 23:59:59.999';
-      dateCondition = `A.TranDate BETWEEN '${fromDate}' AND '${currentDate}' AND`;
-    }
+    const request = connection.request();
+    const from = parseDateOnly(fromDate, false);
+    const to = parseDateOnly(toDate, true);
+    if (fromDate && !from) return res.status(400).json({ success: false, message: "Invalid fromDate. Use YYYY-MM-DD." });
+    if (toDate && !to) return res.status(400).json({ success: false, message: "Invalid toDate. Use YYYY-MM-DD." });
 
-    console.log("📊 SALES REPORT ALL (HISTORICAL) - Date Condition:", dateCondition || "ALL TIME");
+    const conditions = [];
+    if (from) {
+      request.input("fromDate", sql.DateTime2, from);
+      conditions.push("A.TranDate >= @fromDate");
+    }
+    if (to) {
+      request.input("toDate", sql.DateTime2, to);
+      conditions.push("A.TranDate <= @toDate");
+    }
+    const dateCondition = conditions.length ? `${conditions.join(" AND ")} AND` : "";
+
+    console.log("📊 SALES REPORT ALL (HISTORICAL) - Date filter:", conditions.length ? conditions.join(" AND ") : "ALL TIME");
 
     const query = `
 -------------------------------
@@ -461,12 +478,15 @@ GROUP BY
   ISNULL(A.TaxPer,0), ISNULL(A.CostPrice,0), ISNULL(A.PurchasePrice,0),
   ISNULL(A.WholesalePrice,0), ISNULL(A.RetailPrice,0)
 
-ORDER BY BillDate DESC, BillNo
+ORDER BY
+  BillDate ASC, BillNo, CompanyCode, Branch, BarCode, SalesMan, SaleorReturn,
+  Location, Time, BarcodeDiscPer, ManualDiscPer, GSTP, CostPrice, PurchasePrice,
+  WholeSalesPrice, RetailPriceInclGST
 OFFSET ${offset} ROWS
 FETCH NEXT ${recordsPerPage + 1} ROWS ONLY
 `;
 
-    const result = await connection.request().query(query);
+    const result = await request.query(query);
 
     const hasMore = result.recordset.length > recordsPerPage;
     const actualData = hasMore ? result.recordset.slice(0, recordsPerPage) : result.recordset;
@@ -497,17 +517,33 @@ FETCH NEXT ${recordsPerPage + 1} ROWS ONLY
 // ============================================
 const getSalesReportCount = async (req, res) => {
   try {
-    const connection = await pool;
+    const connection = await getPoolForTenant(req.user.tenantId);
 
     console.log("📊 SALES REPORT COUNT - Calculating...");
 
+    const from = parseDateOnly(req.query.fromDate, false);
+    const to = parseDateOnly(req.query.toDate, true);
+    if (req.query.fromDate && !from) return res.status(400).json({ success: false, message: "Invalid fromDate. Use YYYY-MM-DD." });
+    if (req.query.toDate && !to) return res.status(400).json({ success: false, message: "Invalid toDate. Use YYYY-MM-DD." });
+
+    const request = connection.request();
+    const countConditions = ["ISNULL(Cancel, 'N') != 'Y'"];
+    if (from) {
+      request.input("fromDate", sql.DateTime2, from);
+      countConditions.push("TranDate >= @fromDate");
+    }
+    if (to) {
+      request.input("toDate", sql.DateTime2, to);
+      countConditions.push("TranDate <= @toDate");
+    }
+    const where = `WHERE ${countConditions.join(" AND ")}`;
     const query = `
 SELECT 
-  (SELECT COUNT(*) FROM UnPosDetail) + 
-  (SELECT COUNT(*) FROM PosDetail) AS TotalCount
+  (SELECT COUNT(*) FROM UnPosDetail ${where}) + 
+  (SELECT COUNT(*) FROM PosDetail ${where}) AS TotalCount
 `;
 
-    const result = await connection.request().query(query);
+    const result = await request.query(query);
     const totalCount = result.recordset[0]?.TotalCount || 0;
 
     console.log("✅ SALES REPORT COUNT:", totalCount);
@@ -531,10 +567,10 @@ SELECT
 // ============================================
 const getBarcodes = async (req, res) => {
   try {
-    const connection = await pool;
+    const connection = await getPoolForTenant(req.user.tenantId);
 
-    const page = parseInt(req.query.page);
-    const pageSize = parseInt(req.query.pageSize);
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const pageSize = Math.max(100, Math.min(parseInt(req.query.pageSize, 10) || 5000, 10000));
     const offset = (page - 1) * pageSize;
 
     console.log(`📊 BARCODES API - Page: ${page}, Size: ${pageSize}`);
@@ -552,7 +588,7 @@ const getBarcodes = async (req, res) => {
         SELECT *
         FROM BarcodeView
         WHERE YEAR(DesignDate) >= @lastYear -- ✅ FIX: LAST YEAR + CURRENT YEAR (returns 100K+ records)
-        ORDER BY Barcode
+        ORDER BY Barcode, DesignNo, Color, Size, DesignDate
         OFFSET @offset ROWS
         FETCH NEXT @pageSize ROWS ONLY
       `);
@@ -595,7 +631,7 @@ const getBarcodes = async (req, res) => {
 // ============================================
 const getBranchList = async (req, res) => {
   try {
-    const connection = await pool;
+    const connection = await getPoolForTenant(req.user.tenantId);
     
     console.log("📊 BRANCH LIST API - Fetching...");
     
@@ -616,7 +652,7 @@ const getBranchList = async (req, res) => {
 // ============================================
 const getEmployeeView = async (req, res) => {
   try {
-    const connection = await pool;
+    const connection = await getPoolForTenant(req.user.tenantId);
     
     console.log("📊 EMPLOYEE VIEW API - Fetching...");
     
