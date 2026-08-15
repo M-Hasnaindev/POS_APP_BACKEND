@@ -1,1 +1,0 @@
-Tenant keys are stored in .env as DB_1_KEY and DB_2_KEY. Keep them private and change them whenever needed.
