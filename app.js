@@ -14,6 +14,7 @@ app.get("/", (_req, res) => {
     endpoints: {
       auth: "/api/auth",
       sales: "/api/sales",
+      notifications: "/api/notifications",
       health: "/api/health",
     },
   });
@@ -29,9 +30,11 @@ app.get("/api/health", (_req, res) => {
 
 const authRoutes = require("./routes/authRoutes");
 const salesRoutes = require("./routes/salesRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
 
 
 app.use("/api/auth", authRoutes);
 app.use("/api/sales", salesRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 module.exports = app;
