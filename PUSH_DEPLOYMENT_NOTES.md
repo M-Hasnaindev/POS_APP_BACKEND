@@ -5,8 +5,23 @@ The backend push worker reads new rows from `dbo.Notifications`, matches them to
 Important deployment points:
 
 - Deploy this backend together with the matching frontend build.
-- Configure `CRON_SECRET` in Vercel when using a protected scheduled/external call.
-- `/api/notifications/process-push` is the push-worker endpoint.
-- `vercel.json` requests `*/10 * * * *`; the hosting plan/scheduler must support that frequency.
+- This project is configured for **Vercel Hobby**, so `vercel.json` intentionally contains no Vercel cron schedule. Hobby plans reject cron expressions that run more than once per day.
+- Keep `CRON_SECRET` configured in Vercel. The external scheduler must send it as `Authorization: Bearer <CRON_SECRET>`.
+- `/api/notifications/process-push` is the protected push-worker endpoint.
+- Configure an external scheduler to call that endpoint every 10 minutes.
 - The frontend Android build must have valid Firebase/FCM credentials. Backend code cannot generate those credentials.
 - Expo ticket errors such as `DeviceNotRegistered` are handled; other Expo delivery errors are surfaced in Vercel logs and are not silently marked as delivered.
+
+## External scheduler request
+
+Method: `GET`
+
+URL:
+
+`https://YOUR-VERCEL-DOMAIN/api/notifications/process-push`
+
+Header:
+
+`Authorization: Bearer YOUR_CRON_SECRET`
+
+Schedule: every 10 minutes.
