@@ -3,6 +3,7 @@ const { sql, getPoolForTenant } = require("../config/db");
 const { tenants } = require("../config/tenants");
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
+const EXPO_RECEIPTS_URL = "https://exp.host/--/api/v2/push/getReceipts";
 const notificationSchemaCache = new WeakMap();
 const notificationSupportTablesReady = new WeakMap();
 
@@ -447,6 +448,11 @@ async function ensurePushTables(db) {
           ExpoPushToken NVARCHAR(255) NOT NULL,
           UserId NVARCHAR(100) NOT NULL,
           SentAt DATETIME2 NOT NULL CONSTRAINT DF_MobileNotificationPushLog_SentAt DEFAULT(GETDATE()),
+          ExpoTicketId NVARCHAR(100) NULL,
+          ReceiptStatus NVARCHAR(20) NULL,
+          ReceiptError NVARCHAR(100) NULL,
+          ReceiptMessage NVARCHAR(1000) NULL,
+          ReceiptCheckedAt DATETIME2 NULL,
           CONSTRAINT PK_MobileNotificationPushLog PRIMARY KEY (NotificationKey, ExpoPushToken)
         );
       END;
@@ -475,6 +481,21 @@ async function ensurePushTables(db) {
 
       IF COL_LENGTH('dbo.MobilePushTokens', 'LastPushCheckAt') IS NULL
         ALTER TABLE dbo.MobilePushTokens ADD LastPushCheckAt DATETIME2 NULL;
+
+      IF COL_LENGTH('dbo.MobileNotificationPushLog', 'ExpoTicketId') IS NULL
+        ALTER TABLE dbo.MobileNotificationPushLog ADD ExpoTicketId NVARCHAR(100) NULL;
+
+      IF COL_LENGTH('dbo.MobileNotificationPushLog', 'ReceiptStatus') IS NULL
+        ALTER TABLE dbo.MobileNotificationPushLog ADD ReceiptStatus NVARCHAR(20) NULL;
+
+      IF COL_LENGTH('dbo.MobileNotificationPushLog', 'ReceiptError') IS NULL
+        ALTER TABLE dbo.MobileNotificationPushLog ADD ReceiptError NVARCHAR(100) NULL;
+
+      IF COL_LENGTH('dbo.MobileNotificationPushLog', 'ReceiptMessage') IS NULL
+        ALTER TABLE dbo.MobileNotificationPushLog ADD ReceiptMessage NVARCHAR(1000) NULL;
+
+      IF COL_LENGTH('dbo.MobileNotificationPushLog', 'ReceiptCheckedAt') IS NULL
+        ALTER TABLE dbo.MobileNotificationPushLog ADD ReceiptCheckedAt DATETIME2 NULL;
     `);
 
     // Step 3: only reference the migrated columns after the ALTER batch finished.
@@ -816,6 +837,115 @@ async function sendExpoPush(messages) {
   return results;
 }
 
+async function fetchExpoReceipts(ticketIds) {
+  if (!ticketIds.length) return {};
+  const response = await fetch(EXPO_RECEIPTS_URL, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Accept-Encoding": "gzip, deflate",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ids: ticketIds }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Expo receipt request failed (${response.status}): ${body.slice(0, 250)}`);
+  }
+  const body = await response.json();
+  return body?.data && typeof body.data === "object" ? body.data : {};
+}
+
+async function reconcileExpoReceipts(db) {
+  const pendingResult = await db.request().query(`
+    SELECT TOP (1000) NotificationKey, ExpoPushToken, ExpoTicketId
+    FROM dbo.MobileNotificationPushLog
+    WHERE ReceiptStatus = 'pending'
+      AND ExpoTicketId IS NOT NULL
+      AND SentAt <= DATEADD(MINUTE, -1, GETDATE())
+      AND SentAt >= DATEADD(HOUR, -24, GETDATE())
+    ORDER BY SentAt ASC
+  `);
+  const pending = pendingResult.recordset;
+  if (!pending.length) return { checked: 0, delivered: 0, failed: 0, invalidDevices: 0, errors: [] };
+
+  const receipts = await fetchExpoReceipts(pending.map((row) => String(row.ExpoTicketId)));
+  const resolved = pending.filter((row) => receipts[String(row.ExpoTicketId)]);
+  const invalidTokens = new Set();
+  const errors = [];
+  const receiptUpdates = [];
+  let delivered = 0;
+
+  for (const row of resolved) {
+    const receipt = receipts[String(row.ExpoTicketId)] || {};
+    const status = receipt.status === "ok" ? "ok" : "error";
+    const errorCode = text(receipt?.details?.error);
+    const message = text(receipt?.message).slice(0, 1000);
+    receiptUpdates.push({
+      key: String(row.NotificationKey),
+      token: String(row.ExpoPushToken),
+      status,
+      error: errorCode || null,
+      message: message || null,
+    });
+
+    if (status === "ok") {
+      delivered += 1;
+    } else {
+      errors.push({ code: errorCode || "ExpoReceiptError", message: message || "Push delivery failed" });
+      if (errorCode === "DeviceNotRegistered") invalidTokens.add(String(row.ExpoPushToken));
+    }
+  }
+
+  // SQL Server allows at most 2100 parameters. Update receipts in compact
+  // batches so one cron run does not make hundreds of sequential DB calls.
+  for (let start = 0; start < receiptUpdates.length; start += 300) {
+    const chunk = receiptUpdates.slice(start, start + 300);
+    const request = db.request();
+    const rows = chunk.map((entry, index) => {
+      request.input(`receiptKey${index}`, sql.NVarChar(64), entry.key);
+      request.input(`receiptToken${index}`, sql.NVarChar(255), entry.token);
+      request.input(`receiptStatus${index}`, sql.NVarChar(20), entry.status);
+      request.input(`receiptError${index}`, sql.NVarChar(100), entry.error);
+      request.input(`receiptMessage${index}`, sql.NVarChar(1000), entry.message);
+      return `(@receiptKey${index}, @receiptToken${index}, @receiptStatus${index}, @receiptError${index}, @receiptMessage${index})`;
+    });
+    await request.query(`
+      UPDATE target
+      SET target.ReceiptStatus = source.ReceiptStatus,
+          target.ReceiptError = source.ReceiptError,
+          target.ReceiptMessage = source.ReceiptMessage,
+          target.ReceiptCheckedAt = GETDATE()
+      FROM dbo.MobileNotificationPushLog AS target
+      INNER JOIN (VALUES ${rows.join(",")})
+        AS source(NotificationKey, ExpoPushToken, ReceiptStatus, ReceiptError, ReceiptMessage)
+        ON target.NotificationKey = source.NotificationKey
+       AND target.ExpoPushToken = source.ExpoPushToken
+    `);
+  }
+
+  if (invalidTokens.size) {
+    const request = db.request();
+    const parameters = Array.from(invalidTokens).map((token, index) => {
+      request.input(`invalidReceiptToken${index}`, sql.NVarChar(255), token);
+      return `@invalidReceiptToken${index}`;
+    });
+    await request.query(`
+      UPDATE dbo.MobilePushTokens
+      SET IsActive = 0, LastSeenAt = GETDATE()
+      WHERE ExpoPushToken IN (${parameters.join(",")})
+    `);
+  }
+
+  return {
+    checked: resolved.length,
+    delivered,
+    failed: resolved.length - delivered,
+    invalidDevices: invalidTokens.size,
+    errors: errors.slice(0, 3),
+  };
+}
+
 async function insertPushLogs(db, entries) {
   if (!entries.length) return;
   const unique = [];
@@ -835,19 +965,27 @@ async function insertPushLogs(db, entries) {
       request.input(`key${index}`, sql.NVarChar(64), entry.key);
       request.input(`token${index}`, sql.NVarChar(255), entry.token);
       request.input(`user${index}`, sql.NVarChar(100), entry.userId);
-      return `(@key${index}, @token${index}, @user${index})`;
+      request.input(`ticket${index}`, sql.NVarChar(100), entry.ticketId || null);
+      return `(@key${index}, @token${index}, @user${index}, @ticket${index})`;
     });
 
     await request.query(`
-      INSERT INTO dbo.MobileNotificationPushLog (NotificationKey, ExpoPushToken, UserId, SentAt)
-      SELECT V.NotificationKey, V.ExpoPushToken, V.UserId, GETDATE()
-      FROM (VALUES ${rows.join(",")}) V(NotificationKey, ExpoPushToken, UserId)
-      WHERE NOT EXISTS (
-        SELECT 1
-        FROM dbo.MobileNotificationPushLog L
-        WHERE L.NotificationKey = V.NotificationKey
-          AND L.ExpoPushToken = V.ExpoPushToken
-      )
+      MERGE dbo.MobileNotificationPushLog AS target
+      USING (VALUES ${rows.join(",")}) AS source(NotificationKey, ExpoPushToken, UserId, ExpoTicketId)
+        ON target.NotificationKey = source.NotificationKey
+       AND target.ExpoPushToken = source.ExpoPushToken
+      WHEN MATCHED THEN UPDATE SET
+        UserId = source.UserId,
+        SentAt = GETDATE(),
+        ExpoTicketId = source.ExpoTicketId,
+        ReceiptStatus = 'pending',
+        ReceiptError = NULL,
+        ReceiptMessage = NULL,
+        ReceiptCheckedAt = NULL
+      WHEN NOT MATCHED THEN INSERT
+        (NotificationKey, ExpoPushToken, UserId, SentAt, ExpoTicketId, ReceiptStatus)
+      VALUES
+        (source.NotificationKey, source.ExpoPushToken, source.UserId, GETDATE(), source.ExpoTicketId, 'pending');
     `);
   }
 }
@@ -855,6 +993,7 @@ async function insertPushLogs(db, entries) {
 async function processTenantPushes(tenantId) {
   const db = await getPoolForTenant(tenantId);
   await ensurePushTables(db);
+  const receiptSummary = await reconcileExpoReceipts(db);
   const schema = await getNotificationSchema(db);
 
   const tokenResult = await db.request().query(`
@@ -864,7 +1003,7 @@ async function processTenantPushes(tenantId) {
     WHERE IsActive = 1
   `);
   const devices = tokenResult.recordset;
-  if (!devices.length) return { tenantId, sent: 0, devices: 0 };
+  if (!devices.length) return { tenantId, sent: 0, devices: 0, receipts: receiptSummary };
 
   const preferenceResult = await db.request().query(`
     SELECT UserId, CompanyCode, SuppressAll, SuppressHigh, SuppressMedium, SuppressLow
@@ -1011,7 +1150,7 @@ async function processTenantPushes(tenantId) {
       const ticket = result?.ticket || {};
       const pending = pendingLogs[index];
       if (ticket.status === "ok") {
-        if (pending) successfulLogs.push(pending);
+        if (pending) successfulLogs.push({ ...pending, ticketId: text(ticket.id) || null });
         sentCount += 1;
         return;
       }
@@ -1077,6 +1216,7 @@ async function processTenantPushes(tenantId) {
     invalidDevices: invalidDeviceCount,
     devices: devices.length,
     checked: candidates.length,
+    receipts: receiptSummary,
   };
 }
 
