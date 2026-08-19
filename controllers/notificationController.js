@@ -680,6 +680,9 @@ exports.registerPushToken = async (req, res) => {
         .query("DELETE FROM dbo.MobileNotificationPushLog WHERE ExpoPushToken = @token");
     }
 
+    console.log(
+      `PUSH DEVICE REGISTERED [${req.user.tenantId}] user=${String(req.user.userId || "")} platform=${platform || "unknown"}`,
+    );
     return res.json({ success: true });
   } catch (err) {
     console.error("REGISTER PUSH TOKEN ERROR:", err.message);
@@ -777,7 +780,7 @@ function shouldSendToUser(notification, userId) {
 
 async function sendExpoPush(messages) {
   if (!messages.length) return [];
-  const responses = [];
+  const results = [];
   const chunkSize = 100;
 
   for (let start = 0; start < messages.length; start += chunkSize) {
@@ -796,10 +799,21 @@ async function sendExpoPush(messages) {
       const body = await response.text();
       throw new Error(`Expo push request failed (${response.status}): ${body.slice(0, 250)}`);
     }
-    responses.push(await response.json());
+
+    const body = await response.json();
+    const tickets = Array.isArray(body?.data) ? body.data : [];
+    for (let index = 0; index < chunk.length; index += 1) {
+      results.push({
+        message: chunk[index],
+        ticket: tickets[index] || {
+          status: "error",
+          message: "Expo push service returned no ticket for this message",
+        },
+      });
+    }
   }
 
-  return responses;
+  return results;
 }
 
 async function insertPushLogs(db, entries) {
@@ -915,6 +929,21 @@ async function processTenantPushes(tenantId) {
   const messages = [];
   const pendingLogs = [];
 
+  // Most Notifications rows are user-targeted. Index the bounded candidate set
+  // once instead of checking every notification against every registered device.
+  const broadcastCandidates = [];
+  const candidatesByUser = new Map();
+  for (const notification of candidates) {
+    const recipient = text(notification.recipientUserId).toLowerCase();
+    if (!recipient) {
+      broadcastCandidates.push(notification);
+      continue;
+    }
+    const bucket = candidatesByUser.get(recipient) || [];
+    bucket.push(notification);
+    candidatesByUser.set(recipient, bucket);
+  }
+
   for (const device of devices) {
     const token = text(device.ExpoPushToken);
     if (!/^Expo(nent)?PushToken\[.+\]$/.test(token)) continue;
@@ -924,7 +953,12 @@ async function processTenantPushes(tenantId) {
     const deviceCheckAt = new Date(device.LastPushCheckAt || 0);
     const effectiveCheckAt = Number.isNaN(deviceCheckAt.getTime()) ? new Date(0) : deviceCheckAt;
 
-    for (const notification of candidates) {
+    const userCandidates = candidatesByUser.get(text(device.UserId).toLowerCase()) || [];
+    const relevantCandidates = broadcastCandidates.length
+      ? broadcastCandidates.concat(userCandidates)
+      : userCandidates;
+
+    for (const notification of relevantCandidates) {
       const notificationDate = notification.dateTime ? new Date(notification.dateTime) : null;
       if (notificationDate && !Number.isNaN(notificationDate.getTime())) {
         // Two-minute overlap is used in the SQL fetch, but each device only gets
@@ -963,13 +997,71 @@ async function processTenantPushes(tenantId) {
     }
   }
 
+  let sentCount = 0;
+  let invalidDeviceCount = 0;
+  let failedCount = 0;
+
   if (messages.length) {
-    await sendExpoPush(messages);
-    await insertPushLogs(db, pendingLogs);
+    const deliveryResults = await sendExpoPush(messages);
+    const successfulLogs = [];
+    const invalidTokens = new Set();
+    const retryableFailures = [];
+
+    deliveryResults.forEach((result, index) => {
+      const ticket = result?.ticket || {};
+      const pending = pendingLogs[index];
+      if (ticket.status === "ok") {
+        if (pending) successfulLogs.push(pending);
+        sentCount += 1;
+        return;
+      }
+
+      failedCount += 1;
+      const errorCode = text(ticket?.details?.error);
+      const failure = {
+        code: errorCode || "ExpoPushError",
+        message: text(ticket?.message) || "Push delivery was rejected",
+        token: pending?.token || text(result?.message?.to),
+      };
+
+      if (errorCode === "DeviceNotRegistered" && failure.token) {
+        invalidTokens.add(failure.token);
+      } else {
+        retryableFailures.push(failure);
+      }
+    });
+
+    await insertPushLogs(db, successfulLogs);
+
+    if (invalidTokens.size) {
+      const tokens = Array.from(invalidTokens);
+      const request = db.request();
+      const parameters = tokens.map((token, index) => {
+        request.input(`invalidToken${index}`, sql.NVarChar(255), token);
+        return `@invalidToken${index}`;
+      });
+      await request.query(`
+        UPDATE dbo.MobilePushTokens
+        SET IsActive = 0, LastSeenAt = GETDATE()
+        WHERE ExpoPushToken IN (${parameters.join(",")})
+      `);
+      invalidDeviceCount = tokens.length;
+    }
+
+    if (retryableFailures.length) {
+      const sample = retryableFailures
+        .slice(0, 3)
+        .map((item) => `${item.code}: ${item.message}`)
+        .join(" | ");
+      // Do not advance checkpoints for active devices. Successful rows are
+      // deduplicated by MobileNotificationPushLog, while failed rows retry on
+      // the next worker run instead of being silently lost.
+      throw new Error(`Expo push ticket errors (${retryableFailures.length}): ${sample}`);
+    }
   }
 
-  // Advance the checkpoint only after the notification batch has been processed
-  // successfully. A failed Expo request leaves it untouched so the next run can retry.
+  // Advance the checkpoint only after active-device notifications have either
+  // succeeded or invalid/uninstalled device tokens have been deactivated.
   await db.request()
     .input("cutoff", sql.DateTime2, workerCutoff)
     .query(`
@@ -978,7 +1070,14 @@ async function processTenantPushes(tenantId) {
       WHERE IsActive = 1
     `);
 
-  return { tenantId, sent: messages.length, devices: devices.length, checked: candidates.length };
+  return {
+    tenantId,
+    sent: sentCount,
+    failed: failedCount,
+    invalidDevices: invalidDeviceCount,
+    devices: devices.length,
+    checked: candidates.length,
+  };
 }
 
 exports.processPushNotifications = async (req, res) => {
@@ -995,15 +1094,18 @@ exports.processPushNotifications = async (req, res) => {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
 
-    const results = [];
-    for (const tenant of tenants) {
-      try {
-        results.push(await processTenantPushes(tenant.id));
-      } catch (error) {
-        console.error(`PUSH WORKER ERROR [${tenant.id}]:`, error.message);
-        results.push({ tenantId: tenant.id, sent: 0, error: error.message });
-      }
-    }
+    // Tenant databases are independent, so process them concurrently. This
+    // shortens Vercel cron duration without changing per-tenant delivery order.
+    const results = await Promise.all(
+      tenants.map(async (tenant) => {
+        try {
+          return await processTenantPushes(tenant.id);
+        } catch (error) {
+          console.error(`PUSH WORKER ERROR [${tenant.id}]:`, error.message);
+          return { tenantId: tenant.id, sent: 0, error: error.message };
+        }
+      }),
+    );
 
     return res.json({
       success: true,
