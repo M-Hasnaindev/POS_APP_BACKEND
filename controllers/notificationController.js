@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const { sql, getPoolForTenant } = require("../config/db");
 const { tenants } = require("../config/tenants");
+const { isDirectFcmToken, isFcmConfigured, sendFcmPush } = require("../services/fcmService");
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const EXPO_RECEIPTS_URL = "https://exp.host/--/api/v2/push/getReceipts";
@@ -659,6 +660,13 @@ exports.registerPushToken = async (req, res) => {
       return res.status(400).json({ success: false, message: "Push token required" });
     }
 
+    if (isDirectFcmToken(expoPushToken) && !isFcmConfigured()) {
+      return res.status(503).json({
+        success: false,
+        message: "Direct FCM push is not configured on the server",
+      });
+    }
+
     const db = await getPoolForTenant(req.user.tenantId);
     await ensurePushTables(db);
 
@@ -826,6 +834,7 @@ async function sendExpoPush(messages) {
     for (let index = 0; index < chunk.length; index += 1) {
       results.push({
         message: chunk[index],
+        provider: "expo",
         ticket: tickets[index] || {
           status: "error",
           message: "Expo push service returned no ticket for this message",
@@ -835,6 +844,35 @@ async function sendExpoPush(messages) {
   }
 
   return results;
+}
+
+async function sendPushMessages(messages) {
+  if (!messages.length) return [];
+
+  const combined = new Array(messages.length);
+  const expoEntries = [];
+  const fcmEntries = [];
+
+  messages.forEach((message, index) => {
+    if (isDirectFcmToken(message.to)) fcmEntries.push({ index, message });
+    else expoEntries.push({ index, message });
+  });
+
+  if (expoEntries.length) {
+    const expoResults = await sendExpoPush(expoEntries.map((entry) => entry.message));
+    expoResults.forEach((result, position) => {
+      combined[expoEntries[position].index] = result;
+    });
+  }
+
+  if (fcmEntries.length) {
+    const fcmResults = await sendFcmPush(fcmEntries.map((entry) => entry.message));
+    fcmResults.forEach((result, position) => {
+      combined[fcmEntries[position].index] = result;
+    });
+  }
+
+  return combined;
 }
 
 async function fetchExpoReceipts(ticketIds) {
@@ -966,26 +1004,28 @@ async function insertPushLogs(db, entries) {
       request.input(`token${index}`, sql.NVarChar(255), entry.token);
       request.input(`user${index}`, sql.NVarChar(100), entry.userId);
       request.input(`ticket${index}`, sql.NVarChar(100), entry.ticketId || null);
-      return `(@key${index}, @token${index}, @user${index}, @ticket${index})`;
+      request.input(`receiptStatus${index}`, sql.NVarChar(20), entry.receiptStatus || "pending");
+      return `(@key${index}, @token${index}, @user${index}, @ticket${index}, @receiptStatus${index})`;
     });
 
     await request.query(`
       MERGE dbo.MobileNotificationPushLog AS target
-      USING (VALUES ${rows.join(",")}) AS source(NotificationKey, ExpoPushToken, UserId, ExpoTicketId)
+      USING (VALUES ${rows.join(",")}) AS source(NotificationKey, ExpoPushToken, UserId, ExpoTicketId, ReceiptStatus)
         ON target.NotificationKey = source.NotificationKey
        AND target.ExpoPushToken = source.ExpoPushToken
       WHEN MATCHED THEN UPDATE SET
         UserId = source.UserId,
         SentAt = GETDATE(),
         ExpoTicketId = source.ExpoTicketId,
-        ReceiptStatus = 'pending',
+        ReceiptStatus = source.ReceiptStatus,
         ReceiptError = NULL,
         ReceiptMessage = NULL,
-        ReceiptCheckedAt = NULL
+        ReceiptCheckedAt = CASE WHEN source.ReceiptStatus = 'ok' THEN GETDATE() ELSE NULL END
       WHEN NOT MATCHED THEN INSERT
-        (NotificationKey, ExpoPushToken, UserId, SentAt, ExpoTicketId, ReceiptStatus)
+        (NotificationKey, ExpoPushToken, UserId, SentAt, ExpoTicketId, ReceiptStatus, ReceiptCheckedAt)
       VALUES
-        (source.NotificationKey, source.ExpoPushToken, source.UserId, GETDATE(), source.ExpoTicketId, 'pending');
+        (source.NotificationKey, source.ExpoPushToken, source.UserId, GETDATE(), source.ExpoTicketId, source.ReceiptStatus,
+         CASE WHEN source.ReceiptStatus = 'ok' THEN GETDATE() ELSE NULL END);
     `);
   }
 }
@@ -1085,7 +1125,9 @@ async function processTenantPushes(tenantId) {
 
   for (const device of devices) {
     const token = text(device.ExpoPushToken);
-    if (!/^Expo(nent)?PushToken\[.+\]$/.test(token)) continue;
+    const isExpoToken = /^Expo(nent)?PushToken\[.+\]$/.test(token);
+    const isFcmToken = isDirectFcmToken(token);
+    if (!isExpoToken && !isFcmToken) continue;
     const preferenceKey = `${text(device.UserId).toLowerCase()}|${text(device.CompanyCode).toLowerCase()}`;
     const preferences = preferenceMap.get(preferenceKey) || defaultNotificationPreferences();
     if (preferences.suppressAll) continue;
@@ -1141,7 +1183,7 @@ async function processTenantPushes(tenantId) {
   let failedCount = 0;
 
   if (messages.length) {
-    const deliveryResults = await sendExpoPush(messages);
+    const deliveryResults = await sendPushMessages(messages);
     const successfulLogs = [];
     const invalidTokens = new Set();
     const retryableFailures = [];
@@ -1150,7 +1192,13 @@ async function processTenantPushes(tenantId) {
       const ticket = result?.ticket || {};
       const pending = pendingLogs[index];
       if (ticket.status === "ok") {
-        if (pending) successfulLogs.push({ ...pending, ticketId: text(ticket.id) || null });
+        if (pending) {
+          successfulLogs.push({
+            ...pending,
+            ticketId: text(ticket.id) || null,
+            receiptStatus: result?.provider === "fcm" ? "ok" : "pending",
+          });
+        }
         sentCount += 1;
         return;
       }
@@ -1195,7 +1243,7 @@ async function processTenantPushes(tenantId) {
       // Do not advance checkpoints for active devices. Successful rows are
       // deduplicated by MobileNotificationPushLog, while failed rows retry on
       // the next worker run instead of being silently lost.
-      throw new Error(`Expo push ticket errors (${retryableFailures.length}): ${sample}`);
+      throw new Error(`Push delivery errors (${retryableFailures.length}): ${sample}`);
     }
   }
 

@@ -29,6 +29,8 @@ async function diagnoseTenant(tenantId) {
       SELECT
         COUNT(*) AS totalDevices,
         SUM(CASE WHEN IsActive = 1 THEN 1 ELSE 0 END) AS activeDevices,
+        SUM(CASE WHEN IsActive = 1 AND ExpoPushToken LIKE 'FCM:%' THEN 1 ELSE 0 END) AS activeFcmDevices,
+        SUM(CASE WHEN IsActive = 1 AND LEFT(ExpoPushToken, 4) = 'Expo' THEN 1 ELSE 0 END) AS activeExpoDevices,
         MAX(LastSeenAt) AS lastSeenAt,
         MAX(LastPushCheckAt) AS lastPushCheckAt
       FROM dbo.MobilePushTokens
