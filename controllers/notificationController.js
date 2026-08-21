@@ -23,6 +23,8 @@ function text(value) {
   return String(value).trim();
 }
 
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
 function normalizedPriority(value) {
   const raw = text(value).toLowerCase();
   if (["high", "h", "1", "urgent", "critical"].includes(raw)) return "high";
@@ -656,6 +658,9 @@ exports.registerPushToken = async (req, res) => {
   try {
     const expoPushToken = text(req.body?.expoPushToken);
     const platform = text(req.body?.platform);
+    console.log(
+      `PUSH DEVICE REGISTER REQUEST [${req.user.tenantId}] user=${String(req.user.userId || "")} platform=${platform || "unknown"} provider=${isDirectFcmToken(expoPushToken) ? "fcm" : "expo"}`,
+    );
     if (!expoPushToken) {
       return res.status(400).json({ success: false, message: "Push token required" });
     }
@@ -716,6 +721,105 @@ exports.registerPushToken = async (req, res) => {
   } catch (err) {
     console.error("REGISTER PUSH TOKEN ERROR:", err.message);
     return res.status(500).json({ success: false, message: "Unable to register push notifications" });
+  }
+};
+
+exports.testPushNotification = async (req, res) => {
+  try {
+    const tenantId = req.user.tenantId;
+    const userId = String(req.user.userId || "");
+    const db = await getPoolForTenant(tenantId);
+    await ensurePushTables(db);
+
+    console.log(`PUSH TEST REQUEST [${tenantId}] user=${userId}`);
+
+    const deviceResult = await db.request()
+      .input("userId", sql.NVarChar(100), userId)
+      .query(`
+        SELECT TOP 1 ExpoPushToken, Platform, LastSeenAt
+        FROM dbo.MobilePushTokens
+        WHERE UserId = @userId AND IsActive = 1
+        ORDER BY LastSeenAt DESC, RegisteredAt DESC
+      `);
+
+    const device = deviceResult.recordset[0];
+    if (!device?.ExpoPushToken) {
+      console.log(`PUSH TEST BLOCKED [${tenantId}] user=${userId} reason=no-active-device`);
+      return res.status(409).json({
+        success: false,
+        message: "No active push device is registered for this user",
+      });
+    }
+
+    const storedToken = text(device.ExpoPushToken);
+    const message = {
+      to: storedToken,
+      title: "CherryTech POS push test",
+      body: "Real push notification delivery is working on this device.",
+      sound: "default",
+      priority: "high",
+      channelId: "business_notifications",
+      data: {
+        type: "business_notification",
+        test: "true",
+      },
+    };
+
+    const [result] = await sendPushMessages([message]);
+    const ticket = result?.ticket || {};
+    const provider = result?.provider || (isDirectFcmToken(storedToken) ? "fcm" : "expo");
+
+    if (ticket.status !== "ok") {
+      const details = ticket?.details?.error || ticket?.message || "provider rejected push";
+      console.error(`PUSH TEST FAILED [${tenantId}] user=${userId} provider=${provider}: ${details}`);
+      return res.status(502).json({
+        success: false,
+        message: ticket?.message || `Push provider rejected the notification (${details})`,
+        provider,
+        details: ticket?.details || null,
+      });
+    }
+
+    // An Expo ticket only confirms queue acceptance. Poll the actual provider
+    // receipt briefly so the in-app test catches stale/uninstalled devices.
+    let deliveryStatus = provider === "fcm" ? "delivered-to-provider" : "pending";
+    if (provider === "expo" && ticket.id) {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await wait(1000);
+        const receipts = await fetchExpoReceipts([String(ticket.id)]);
+        const receipt = receipts[String(ticket.id)];
+        if (!receipt) continue;
+
+        if (receipt.status === "error") {
+          const errorCode = text(receipt?.details?.error) || "ExpoReceiptError";
+          if (errorCode === "DeviceNotRegistered") {
+            await db.request()
+              .input("token", sql.NVarChar(255), storedToken)
+              .query("UPDATE dbo.MobilePushTokens SET IsActive = 0, LastSeenAt = GETDATE() WHERE ExpoPushToken = @token");
+          }
+          return res.status(502).json({
+            success: false,
+            provider,
+            message: text(receipt?.message) || "Push provider could not deliver the notification",
+            details: receipt?.details || { error: errorCode },
+          });
+        }
+
+        deliveryStatus = "delivered-to-provider";
+        break;
+      }
+    }
+
+    console.log(`PUSH TEST SENT [${tenantId}] user=${userId} provider=${provider}`);
+    return res.json({
+      success: true,
+      provider,
+      messageId: ticket.id || "",
+      deliveryStatus,
+    });
+  } catch (err) {
+    console.error("PUSH TEST ERROR:", err.message);
+    return res.status(500).json({ success: false, message: err.message || "Unable to send push test" });
   }
 };
 
@@ -858,19 +962,22 @@ async function sendPushMessages(messages) {
     else expoEntries.push({ index, message });
   });
 
-  if (expoEntries.length) {
-    const expoResults = await sendExpoPush(expoEntries.map((entry) => entry.message));
-    expoResults.forEach((result, position) => {
-      combined[expoEntries[position].index] = result;
-    });
-  }
-
-  if (fcmEntries.length) {
-    const fcmResults = await sendFcmPush(fcmEntries.map((entry) => entry.message));
-    fcmResults.forEach((result, position) => {
-      combined[fcmEntries[position].index] = result;
-    });
-  }
+  await Promise.all([
+    expoEntries.length
+      ? sendExpoPush(expoEntries.map((entry) => entry.message)).then((expoResults) => {
+          expoResults.forEach((result, position) => {
+            combined[expoEntries[position].index] = result;
+          });
+        })
+      : Promise.resolve(),
+    fcmEntries.length
+      ? sendFcmPush(fcmEntries.map((entry) => entry.message)).then((fcmResults) => {
+          fcmResults.forEach((result, position) => {
+            combined[fcmEntries[position].index] = result;
+          });
+        })
+      : Promise.resolve(),
+  ]);
 
   return combined;
 }
@@ -1295,8 +1402,9 @@ exports.processPushNotifications = async (req, res) => {
       }),
     );
 
-    return res.json({
-      success: true,
+    const hasErrors = results.some((result) => Boolean(result?.error));
+    return res.status(hasErrors ? 500 : 200).json({
+      success: !hasErrors,
       processedAt: new Date().toISOString(),
       results,
     });

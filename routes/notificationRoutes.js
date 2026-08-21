@@ -4,6 +4,7 @@ const {
   getRecentNotifications,
   registerPushToken,
   unregisterPushToken,
+  testPushNotification,
   processPushNotifications,
   markNotificationRead,
   markAllNotificationsRead,
@@ -24,6 +25,7 @@ router.put("/preferences", updateNotificationPreferences);
 router.get("/", getNotifications);
 router.post("/register-device", registerPushToken);
 router.post("/unregister-device", unregisterPushToken);
+router.post("/test-push", testPushNotification);
 router.post("/mark-read", markNotificationRead);
 router.post("/mark-all-read", markAllNotificationsRead);
 
