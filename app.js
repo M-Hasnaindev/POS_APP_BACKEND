@@ -16,6 +16,7 @@ app.get("/", (_req, res) => {
       sales: "/api/sales",
       notifications: "/api/notifications",
       products: "/api/products",
+      versionUpdates: "/api/versionupdates",
       health: "/api/health",
     },
   });
