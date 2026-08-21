@@ -1,5 +1,5 @@
 const sql = require("mssql");
-const { getTenantById, tenants } = require("./tenants");
+const { getTenantById } = require("./tenants");
 
 const pools = new Map();
 
@@ -39,13 +39,6 @@ async function testTenantConnection(tenantId) {
   return true;
 }
 
-async function getDefaultPool() {
-  const configuredTenantId = String(process.env.VERSION_DB_TENANT_ID || "").trim();
-  const tenantId = configuredTenantId || tenants[0]?.id;
-  if (!tenantId) throw new Error("No default database is configured");
-  return getPoolForTenant(tenantId);
-}
-
 async function closeAllPools() {
   const currentPools = Array.from(pools.values());
   pools.clear();
@@ -57,4 +50,4 @@ async function closeAllPools() {
   );
 }
 
-module.exports = { sql, getPoolForTenant, getDefaultPool, testTenantConnection, closeAllPools };
+module.exports = { sql, getPoolForTenant, testTenantConnection, closeAllPools };
