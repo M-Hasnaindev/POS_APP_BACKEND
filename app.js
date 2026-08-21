@@ -31,10 +31,12 @@ app.get("/api/health", (_req, res) => {
 const authRoutes = require("./routes/authRoutes");
 const salesRoutes = require("./routes/salesRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
+const versionUpdateRoutes = require("./routes/versionUpdateRoutes");
 
 
 app.use("/api/auth", authRoutes);
 app.use("/api/sales", salesRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/versionupdates", versionUpdateRoutes);
 
 module.exports = app;
