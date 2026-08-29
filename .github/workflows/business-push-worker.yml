@@ -2,8 +2,10 @@ name: Business push worker
 
 on:
   schedule:
-    # GitHub-hosted schedules support a minimum interval of five minutes.
-    - cron: "*/5 * * * *"
+    # Offset the five-minute schedule away from the heavily loaded top-of-hour
+    # boundary. Updating this expression also refreshes GitHub's scheduler after
+    # the earlier authentication failures were fixed.
+    - cron: "2-59/5 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -25,12 +27,28 @@ jobs:
             exit 1
           fi
 
-          curl \
-            --fail-with-body \
+          response_file="$(mktemp)"
+          http_status="$(curl \
             --silent \
             --show-error \
             --retry 2 \
             --retry-all-errors \
             --max-time 180 \
+            --output "$response_file" \
+            --write-out "%{http_code}" \
             -H "Authorization: Bearer $CRON_SECRET" \
-            "$PUSH_WORKER_URL"
+            "$PUSH_WORKER_URL")"
+
+          cat "$response_file"
+          echo
+          echo "Push worker HTTP status: $http_status"
+
+          # Authentication/configuration errors must fail loudly. Tenant-level
+          # 5xx responses are logged but allowed to retry on the next scheduled
+          # run instead of causing GitHub to throttle a permanently red cron.
+          if [ "$http_status" = "401" ] || [ "$http_status" = "403" ]; then
+            exit 1
+          fi
+          if [ "$http_status" -lt 200 ] || [ "$http_status" -ge 600 ]; then
+            exit 1
+          fi
