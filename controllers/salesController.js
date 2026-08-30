@@ -113,10 +113,15 @@ SELECT
   SUM(ISNULL(SalesmanAmt,0)) AS SalesmanAmt
 
 FROM UnPosDetail A
-LEFT JOIN UnPosMaster B 
-  ON A.CompanyCode = B.CompanyCode 
-  AND A.Branch = B.Branch 
-  AND A.TransactionNumber = B.TransactionNumber
+OUTER APPLY (
+  SELECT TOP (1)
+    M.CompanyCode, M.Branch, M.TransactionNumber, M.EntryDate
+  FROM UnPosMaster M
+  WHERE M.CompanyCode = A.CompanyCode
+    AND M.Branch = A.Branch
+    AND M.TransactionNumber = A.TransactionNumber
+  ORDER BY M.EntryDate DESC
+) B
 
 WHERE 
   A.TranDate BETWEEN '${fromDateStr}' AND '${toDateStr}'
@@ -206,10 +211,15 @@ SELECT
   SUM(ISNULL(SalesmanAmt,0)) AS SalesmanAmt
 
 FROM PosDetail A
-LEFT JOIN PosMaster B 
-  ON A.CompanyCode = B.CompanyCode 
-  AND A.Branch = B.Branch 
-  AND A.TransactionNumber = B.TransactionNumber
+OUTER APPLY (
+  SELECT TOP (1)
+    M.CompanyCode, M.Branch, M.TransactionNumber, M.EntryDate
+  FROM PosMaster M
+  WHERE M.CompanyCode = A.CompanyCode
+    AND M.Branch = A.Branch
+    AND M.TransactionNumber = A.TransactionNumber
+  ORDER BY M.EntryDate DESC
+) B
 
 WHERE 
   A.TranDate BETWEEN '${fromDateStr}' AND '${toDateStr}'
@@ -359,10 +369,15 @@ SELECT
   MAX(LastEditDate) AS LastEditDate
 
 FROM UnPosDetail A
-LEFT JOIN UnPosMaster B 
-  ON A.CompanyCode = B.CompanyCode 
-  AND A.Branch = B.Branch 
-  AND A.TransactionNumber = B.TransactionNumber
+OUTER APPLY (
+  SELECT TOP (1)
+    M.CompanyCode, M.Branch, M.TransactionNumber, M.EntryDate
+  FROM UnPosMaster M
+  WHERE M.CompanyCode = A.CompanyCode
+    AND M.Branch = A.Branch
+    AND M.TransactionNumber = A.TransactionNumber
+  ORDER BY M.EntryDate DESC
+) B
 
 WHERE 
   ${dateCondition}
@@ -458,10 +473,15 @@ SELECT
   MAX(LastEditDate) AS LastEditDate
 
 FROM PosDetail A
-LEFT JOIN PosMaster B 
-  ON A.CompanyCode = B.CompanyCode 
-  AND A.Branch = B.Branch 
-  AND A.TransactionNumber = B.TransactionNumber
+OUTER APPLY (
+  SELECT TOP (1)
+    M.CompanyCode, M.Branch, M.TransactionNumber, M.EntryDate
+  FROM PosMaster M
+  WHERE M.CompanyCode = A.CompanyCode
+    AND M.Branch = A.Branch
+    AND M.TransactionNumber = A.TransactionNumber
+  ORDER BY M.EntryDate DESC
+) B
 
 WHERE 
   ${dateCondition}
