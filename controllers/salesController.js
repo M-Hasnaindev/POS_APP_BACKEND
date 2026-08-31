@@ -115,7 +115,7 @@ SELECT
 FROM UnPosDetail A
 OUTER APPLY (
   SELECT TOP (1)
-    M.CompanyCode, M.Branch, M.TransactionNumber, M.EntryDate
+    M.CompanyCode, M.Branch, M.TransactionNumber, M.EntryDate, M.LastEditDate
   FROM UnPosMaster M
   WHERE M.CompanyCode = A.CompanyCode
     AND M.Branch = A.Branch
@@ -213,7 +213,7 @@ SELECT
 FROM PosDetail A
 OUTER APPLY (
   SELECT TOP (1)
-    M.CompanyCode, M.Branch, M.TransactionNumber, M.EntryDate
+    M.CompanyCode, M.Branch, M.TransactionNumber, M.EntryDate, M.LastEditDate
   FROM PosMaster M
   WHERE M.CompanyCode = A.CompanyCode
     AND M.Branch = A.Branch
@@ -366,12 +366,12 @@ SELECT
   SUM(ISNULL(DetPaidCredit,0)) AS PaidCredit,
   SUM(ISNULL(SalesmanAmt,0)) AS SalesmanAmt,
 
-  MAX(LastEditDate) AS LastEditDate
+  MAX(B.LastEditDate) AS LastEditDate
 
 FROM UnPosDetail A
 OUTER APPLY (
   SELECT TOP (1)
-    M.CompanyCode, M.Branch, M.TransactionNumber, M.EntryDate
+    M.CompanyCode, M.Branch, M.TransactionNumber, M.EntryDate, M.LastEditDate
   FROM UnPosMaster M
   WHERE M.CompanyCode = A.CompanyCode
     AND M.Branch = A.Branch
@@ -470,12 +470,12 @@ SELECT
   SUM(ISNULL(DetPaidCredit,0)) AS PaidCredit,
   SUM(ISNULL(SalesmanAmt,0)) AS SalesmanAmt,
 
-  MAX(LastEditDate) AS LastEditDate
+  MAX(B.LastEditDate) AS LastEditDate
 
 FROM PosDetail A
 OUTER APPLY (
   SELECT TOP (1)
-    M.CompanyCode, M.Branch, M.TransactionNumber, M.EntryDate
+    M.CompanyCode, M.Branch, M.TransactionNumber, M.EntryDate, M.LastEditDate
   FROM PosMaster M
   WHERE M.CompanyCode = A.CompanyCode
     AND M.Branch = A.Branch
