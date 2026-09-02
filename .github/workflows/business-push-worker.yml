@@ -14,12 +14,17 @@ permissions:
 
 concurrency:
   group: business-push-worker
-  cancel-in-progress: true
+  # The running job dispatches its successor before it exits. Cancelling the
+  # in-progress run makes an otherwise successful delivery appear failed and
+  # triggers GitHub failure emails. Queue the successor instead.
+  cancel-in-progress: false
 
 jobs:
   deliver-notifications:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    # The self-scheduling step intentionally waits 270 seconds. Leave enough
+    # headroom for runner setup, the worker request, retries, and dispatch.
+    timeout-minutes: 6
     steps:
       - name: Process pending business notifications
         env:

@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "diagnose:push": "node scripts/diagnosePush.js",
     "test:push": "node scripts/testPushDelivery.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test:ai": "node scripts/testAiSafety.js && node scripts/testAiIntegration.js && node scripts/testAdvancedReportFilters.js",
+    "test": "npm run test:ai"
   },
   "keywords": [],
   "author": "",
