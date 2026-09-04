@@ -22,6 +22,17 @@ async function main() {
     assert(catalog.reports.some((report) => report.code === "RPT_02_001_SALES_SUMMARY" && report.available));
     assert(catalog.reports.some((report) => report.code === "RPT_25_001_BRANCH_TARGET_INCENTIVE" && !report.available));
 
+    const schemaCatalogResponse = await fetch(`${base}/catalog`, { headers });
+    const schemaCatalog = await schemaCatalogResponse.json();
+    assert.equal(schemaCatalogResponse.status, 200);
+    const liveObjectNames = new Set(schemaCatalog.tables.map((table) => String(table.name).toLowerCase()));
+    [
+      "BarcodeView", "PosMaster", "PosDetail", "UnPosMaster", "UnPosDetail",
+      "PosPurchaseM", "PosPurchaseD", "PosPReturnM", "PosPReturnD",
+      "PosStockAdjM", "PosStockAdjD", "PosTransferM", "PosTransferD",
+      "PosBarOpen", "PosBarcodeAdjM", "PosBarcodeAdjD",
+    ].forEach((table) => assert(liveObjectNames.has(table.toLowerCase()), `${table} must be present in live AI catalog`));
+
     const filtersResponse = await fetch(`${base}/filters?kind=branches`, { headers });
     const filters = await filtersResponse.json();
     assert.equal(filtersResponse.status, 200);

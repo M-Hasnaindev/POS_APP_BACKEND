@@ -6,6 +6,7 @@ const {
   businessRules,
   tablePurposes,
   selectRelevantTables,
+  trainingContextForTables,
 } = require("../ai/knowledge");
 const { validateReadOnlySql } = require("../ai/sqlSafety");
 const { ollamaChat } = require("./ollamaService");
@@ -26,6 +27,7 @@ const FAMILY_TABLES = Object.freeze({
     "PosBarOpen", "PosPurchaseM", "PosPurchaseD", "PosPReturnM", "PosPReturnD",
     "PosMaster", "PosDetail", "UnPosMaster", "UnPosDetail",
     "PosTransferM", "PosTransferD", "PosStockAdjM", "PosStockAdjD",
+    "PosBarcodeAdjM", "PosBarcodeAdjD",
     "PosStockTakeM", "PosStockTakeD", "BranchFile", "StockRoom", "BarcodeView",
   ],
   purchase: ["PosPurchaseM", "PosPurchaseD", "AccountList", "BranchFile", "StockRoom", "BarcodeView"],
@@ -81,8 +83,11 @@ function selectTablesForReport(report) {
     ...(report.metrics || []),
   ].filter(Boolean).join(" ");
   const inferred = selectRelevantTables(intent);
-  const inferredBusinessTables = inferred.filter((name) => !["BranchFile", "StockRoom", "BarcodeView"].includes(name));
-  const base = inferredBusinessTables.length ? inferred : (FAMILY_TABLES[report.family] || inferred);
+  // The workbook describes the full business family while keyword inference
+  // narrows intent. Keep both: otherwise a valid movement table can disappear
+  // from Ollama's live schema merely because its exact name was not in a report
+  // title (the original cause of barcode-adjustment tables being invisible).
+  const base = [...new Set([...(FAMILY_TABLES[report.family] || []), ...inferred])];
   const selected = new Set([...base, ...(report.requiredTables || [])]);
   return [...selected].filter((name) => allowedTables.includes(name));
 }
@@ -250,7 +255,7 @@ STRICT RULES:
 4. For period reports use @fromDate and @toDate; inclusive end-date pattern is < DATEADD(day,1,@toDate).
 5. Every used table exposing CompanyCode must be isolated with @companyCode. Join CompanyCode between related header/detail transaction tables when both expose it.
 6. Apply EVERY selected optional parameter to the appropriate business column.
-7. Paid POS sales: matching master BillStatus='P', detail Cancel<>'Y', signed returns, and paid UnPos deduplicated against paid Pos.
+7. Mobile Sales Dashboard sales: combine PosDetail + UnPosDetail with UNION ALL for the authenticated company/date scope. Do not require BillStatus='P' and do not remove UnPos merely because a PosMaster row exists. Use the dashboard NetAmount formula including discounts, tax and other/delivery/alteration/stitch charges.
 8. Prefer readable business names when the live schema supports them.
 9. If required data cannot be obtained from the live schema without guessing, return clarify rather than inventing SQL.
 
@@ -273,7 +278,9 @@ PARAMETERS:
 @toDate selected end date
 ${selectedFilterPrompt(bindings)}
 
-LIVE SCHEMA (authoritative, compacted to relevant columns):\n${compactSchemaText(schema, report, bindings)}`;
+  TRAINING WORKBOOK CONTEXT:\n${trainingContextForTables(schema.tables, [report.name, report.category, report.family, ...(report.metrics || [])].join(" "))}
+
+  LIVE SCHEMA (authoritative, compacted to relevant columns):\n${compactSchemaText(schema, report, bindings)}`;
 }
 
 function targetPlannerPrompt(report, target) {
@@ -349,8 +356,8 @@ async function createSqlForTarget(report, schema, bindings, target, repairContex
     ? `\nREPAIR REQUIRED. Previous ${target} query failed. Fix it using ONLY this same live schema.\nFailure: ${String(repairContext.error || "").slice(0, 1200)}\nPrevious SQL: ${String(repairContext.sql || "").slice(0, 7000)}`
     : "";
 
-  // First choice: small JSON object with only ONE SQL query. qwen3:1.7b is
-  // materially more reliable with this than with two long SQL strings in one JSON.
+  // First choice: small JSON object with only ONE SQL query. This remains faster and
+  // more reliable than asking any model for two long SQL strings in one JSON.
   try {
     const response = await ollamaChat([
       { role: "system", content: `${common}\n\n${targetPrompt}` },
@@ -470,7 +477,7 @@ async function runDeterministicFallback({ tenantId, user, code, filters, planner
       ...fallback,
       source: "live-database",
       executionMode: "live-sql-fallback",
-      note: `Live MSSQL report completed through the verified backend query engine because the local Ollama model could not produce a valid SQL plan (${safeErrorMessage(plannerError)}). Figures are still read from the authenticated tenant database; Ollama is used for the management narrative.`,
+      note: `Live MSSQL report completed through the verified backend query engine because the configured Ollama model could not produce a valid SQL plan (${safeErrorMessage(plannerError)}). Figures are still read from the authenticated tenant database; Ollama is used for the management narrative.`,
       debug: process.env.AI_INCLUDE_SQL_DEBUG === "true" ? {
         fallback: true,
         plannerError: safeErrorMessage(plannerError),

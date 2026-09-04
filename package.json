@@ -9,7 +9,10 @@
     "diagnose:push": "node scripts/diagnosePush.js",
     "test:push": "node scripts/testPushDelivery.js",
     "test:ai": "node scripts/testAiSafety.js && node scripts/testAiIntegration.js && node scripts/testAdvancedReportFilters.js",
-    "test": "npm run test:ai"
+    "test": "npm run test:ai",
+    "configure:ollama-cloud": "powershell -ExecutionPolicy Bypass -File scripts/configureOllamaCloud.ps1",
+    "test:ollama-cloud": "node scripts/testOllamaCloud.js",
+    "test:assistant-runtime": "node scripts/testAssistantConversationLogic.js && node scripts/testOllamaThinkingAdapter.js"
   },
   "keywords": [],
   "author": "",

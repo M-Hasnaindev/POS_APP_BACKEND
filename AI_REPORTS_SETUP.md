@@ -19,15 +19,16 @@ Ollama never receives MSSQL credentials and never opens a DB connection itself. 
 ## Required environment variables
 
 ```env
-OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_MODEL=qwen3:1.7b
-OLLAMA_TIMEOUT_MS=90000
+OLLAMA_BASE_URL=https://ollama.com
+OLLAMA_API_KEY=YOUR_BACKEND_ONLY_KEY
+OLLAMA_MODEL=deepseek-v4-pro
+OLLAMA_TIMEOUT_MS=120000
 AI_SQL_TIMEOUT_MS=60000
 AI_MAX_ROWS=200
 AI_INCLUDE_SQL_DEBUG=false
 ```
 
-For a backend deployed somewhere other than the Ollama machine, `OLLAMA_BASE_URL` must point to a securely reachable Ollama host. `127.0.0.1` only works when Node and Ollama run on the same machine/container.
+Production now uses Ollama Cloud directly. Keep `OLLAMA_API_KEY` only in the backend/Vercel environment; never put it in the React Native app. No local Ollama process or model pull is required for cloud mode.
 
 ## Development SQL verification
 

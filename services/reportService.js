@@ -6,8 +6,8 @@ const dimensionMap = {
   day: { label: "Period", select: "CONVERT(varchar(10), s.SaleDate, 23)", join: "", fallback: "" },
   week: { label: "Week", select: "CONCAT(DATEPART(year,s.SaleDate),'-W',RIGHT('0'+CAST(DATEPART(iso_week,s.SaleDate) AS varchar(2)),2))", join: "", fallback: "" },
   month: { label: "Month", select: "CONVERT(varchar(7), s.SaleDate, 23)", join: "", fallback: "" },
-  branch: { label: "Branch", select: "COALESCE(bf.BranchName, s.Branch)", join: "LEFT JOIN BranchFile bf ON bf.BranchCode=s.Branch", fallback: "Unassigned" },
-  store: { label: "Store", select: "COALESCE(sr.Name, s.StoreCode)", join: "LEFT JOIN StockRoom sr ON sr.Code=s.StoreCode", fallback: "Unassigned" },
+  branch: { label: "Branch", select: "COALESCE(bf.BranchName, s.Branch)", join: "LEFT JOIN BranchFile bf ON bf.CompanyCode=@companyCode AND bf.BranchCode=s.Branch", fallback: "Unassigned" },
+  store: { label: "Store", select: "COALESCE(sr.Name, s.StoreCode)", join: "LEFT JOIN StockRoom sr ON sr.Code=s.StoreCode AND sr.Branch=s.Branch", fallback: "Unassigned" },
   barcode: { label: "Product", select: "COALESCE(NULLIF(bv.DesignDesc,''), s.BarCode)", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
   design: { label: "Design", select: "COALESCE(NULLIF(bv.DesignDesc,''),NULLIF(bv.DesignNo,''),s.BarCode)", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
   brand: { label: "Brand", select: "COALESCE(NULLIF(bv.BrandName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
@@ -76,8 +76,13 @@ function addProductFilters(request, clauses, alias, filters, prefix="product") {
 }
 
 function addListFilter(request, clauses, expression, prefix, values, type = sql.NVarChar) {
-  if (!values.length) return;
-  const params = values.map((value, index) => {
+  // Some Assistant paths (forecast / conversational dimensions) call the
+  // verified engines directly instead of going through runReport(). Those
+  // filters may omit empty arrays such as branches/stores/accounts. Treat an
+  // omitted filter as an empty list instead of throwing `values.length`.
+  const safeValues = Array.isArray(values) ? values : (values == null || values === "" ? [] : [values]);
+  if (!safeValues.length) return;
+  const params = safeValues.map((value, index) => {
     const name = `${prefix}${index}`;
     request.input(name, type, value);
     return `@${name}`;
@@ -107,31 +112,31 @@ function salesCte(request, filters) {
     outer.push(`EXISTS (SELECT 1 FROM BarcodeView bvFilter WHERE bvFilter.BarCode=s.BarCode AND ${productFilters.join(" AND ")})`);
   }
   const where = outer.length ? `WHERE ${outer.join(" AND ")}` : "";
-  const net = "ISNULL(d.Amount,0)-ISNULL(d.DiscAutoAmt,0)-ISNULL(d.DiscManualAmt,0)-ISNULL(d.DetSchemeDisc,0)-ISNULL(d.DetLoyalityDisc,0)-ISNULL(d.DetBillDiscAmt,0)-ISNULL(d.DetRoundingAmt,0)";
+  // IMPORTANT: This intentionally mirrors the Sales Dashboard/API business logic.
+  // POS = closed/history sales source, UnPOS = not-yet-closed/live sales source. The
+  // mobile dashboard combines both sources; do not make AI totals depend on BillStatus
+  // or silently remove UnPOS rows because a PosMaster row exists.
+  const net = "ISNULL(d.Amount,0)-ISNULL(d.DiscAutoAmt,0)-ISNULL(d.DiscManualAmt,0)-ISNULL(d.DetSchemeDisc,0)-ISNULL(d.DetLoyalityDisc,0)-ISNULL(d.DetBillDiscAmt,0)-ISNULL(d.DetRoundingAmt,0)+ISNULL(d.TaxAmt,0)+ISNULL(d.DetOthCharges,0)+ISNULL(d.DetDelCharges,0)+ISNULL(d.DetAltCharges,0)+ISNULL(d.DetStitchCharges,0)";
   return `
     WITH SalesBase AS (
-      SELECT d.TranDate SaleDate,d.Branch,d.StoreCode,d.BarCode,d.SalesManAccount SalesMan,
+      SELECT 'POS' Source,d.TranDate SaleDate,d.CompanyCode,d.Branch,d.StoreCode,d.BarCode,d.SalesManAccount SalesMan,
         ISNULL(d.Quantity,0) Qty,ISNULL(d.Amount,0) GrossSales,(${net}) NetSales,
         ISNULL(d.DiscAutoAmt,0)+ISNULL(d.DiscManualAmt,0)+ISNULL(d.DetSchemeDisc,0)+ISNULL(d.DetLoyalityDisc,0)+ISNULL(d.DetBillDiscAmt,0)+ISNULL(d.DetRoundingAmt,0) DiscountAmount,
         ISNULL(d.TaxAmt,0) GST,ISNULL(d.TaxableAmt,0) TaxableAmount,ISNULL(d.PurchasePrice,0)*ISNULL(d.Quantity,0) CostValue,
-        d.DetFBRInvNo,d.DetFBRId,d.TransactionNumber
+        d.DetFBRInvNo,d.DetFBRId,d.TransactionNumber,
+        CONCAT('POS','|',ISNULL(d.CompanyCode,''),'|',ISNULL(d.Branch,''),'|',ISNULL(d.TransactionNumber,'')) BillKey
       FROM PosDetail d
-      INNER JOIN PosMaster m ON m.CompanyCode=d.CompanyCode AND m.Branch=d.Branch AND m.TransactionNumber=d.TransactionNumber
-      WHERE d.CompanyCode=@companyCode AND m.BillStatus='P' AND ISNULL(d.Cancel,'N')<>'Y'
+      WHERE d.CompanyCode=@companyCode
         AND d.TranDate>=@fromDate AND d.TranDate<DATEADD(day,1,@toDate)
       UNION ALL
-      SELECT d.TranDate,d.Branch,d.StoreCode,d.BarCode,d.SalesManAccount,
+      SELECT 'UNPOS',d.TranDate,d.CompanyCode,d.Branch,d.StoreCode,d.BarCode,d.SalesManAccount,
         ISNULL(d.Quantity,0),ISNULL(d.Amount,0),(${net}),
         ISNULL(d.DiscAutoAmt,0)+ISNULL(d.DiscManualAmt,0)+ISNULL(d.DetSchemeDisc,0)+ISNULL(d.DetLoyalityDisc,0)+ISNULL(d.DetBillDiscAmt,0)+ISNULL(d.DetRoundingAmt,0),
-        ISNULL(d.TaxAmt,0),ISNULL(d.TaxableAmt,0),ISNULL(d.PurchasePrice,0)*ISNULL(d.Quantity,0),d.DetFBRInvNo,d.DetFBRId,d.TransactionNumber
+        ISNULL(d.TaxAmt,0),ISNULL(d.TaxableAmt,0),ISNULL(d.PurchasePrice,0)*ISNULL(d.Quantity,0),d.DetFBRInvNo,d.DetFBRId,d.TransactionNumber,
+        CONCAT('UNPOS','|',ISNULL(d.CompanyCode,''),'|',ISNULL(d.Branch,''),'|',ISNULL(d.TransactionNumber,''))
       FROM UnPosDetail d
-      INNER JOIN UnPosMaster m ON m.CompanyCode=d.CompanyCode AND m.Branch=d.Branch AND m.TransactionNumber=d.TransactionNumber
-      WHERE d.CompanyCode=@companyCode AND m.BillStatus='P' AND ISNULL(d.Cancel,'N')<>'Y'
+      WHERE d.CompanyCode=@companyCode
         AND d.TranDate>=@fromDate AND d.TranDate<DATEADD(day,1,@toDate)
-        AND NOT EXISTS (
-          SELECT 1 FROM PosMaster pm WHERE pm.CompanyCode=d.CompanyCode AND pm.Branch=d.Branch
-            AND pm.TransactionNumber=d.TransactionNumber AND pm.BillStatus='P'
-        )
     ), Sales AS (SELECT s.* FROM SalesBase s ${where})`;
 }
 
@@ -147,7 +152,7 @@ async function runSalesSummary(pool, user, filters) {
   const result = await request.query(`${cte}, Daily AS (
       SELECT CONVERT(varchar(10),SaleDate,23) Label,SUM(GrossSales) GrossSales,SUM(NetSales) Amount,
         SUM(Qty) Quantity,SUM(DiscountAmount) DiscountAmount,SUM(GST) GST,
-        SUM(NetSales-CostValue) GrossProfit,COUNT(DISTINCT TransactionNumber) BillCount
+        SUM(NetSales-CostValue) GrossProfit,COUNT(DISTINCT BillKey) BillCount
       FROM Sales GROUP BY CONVERT(varchar(10),SaleDate,23)
     ) SELECT Label,Amount,Quantity,
       SUM(GrossSales) OVER() TotalGrossSales,SUM(Amount) OVER() NetSales,SUM(Quantity) OVER() NetQty,
@@ -161,7 +166,7 @@ async function runSalesSummary(pool, user, filters) {
     MarginPercent:first.MarginPercent,DiscountAmount:first.TotalDiscount,BillCount:first.TotalBillCount };
   return {
     title: "Sales Summary",
-    kpis: toKpis(summary, [["NetSales","Net Sales","currency"],["NetQty","Net Quantity"],["GrossProfit","Gross Profit","currency"],["MarginPercent","Margin %","percent"],["DiscountAmount","Discount","currency"],["BillCount","Paid Bills"]]),
+    kpis: toKpis(summary, [["NetSales","Net Sales","currency"],["NetQty","Net Quantity"],["GrossProfit","Gross Profit","currency"],["MarginPercent","Margin %","percent"],["DiscountAmount","Discount","currency"],["BillCount","Bills"]]),
     charts: [{ type: "line", title: "Daily Sales & Quantity", data: rows }],
     rows,
   };
@@ -203,7 +208,7 @@ function purchaseCte(request, filters, isReturn = false) {
     SELECT m.Date TransactionDate,d.Branch,d.StoreCode,d.BarCode,m.PartyCode,
       ISNULL(d.Quantity,0) Quantity,ISNULL(d.DetBillAmount,ISNULL(d.ValueIncludingST,0)) Amount
     FROM ${detail} d INNER JOIN ${master} m
-      ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber
+      ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber AND m.Branch=d.Branch
     WHERE d.CompanyCode=@companyCode AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y'
       AND m.Date>=@fromDate AND m.Date<DATEADD(day,1,@toDate) ${extra}
   )`;
@@ -243,12 +248,12 @@ async function runPayment(pool, user, filters) {
   const result = await request.query(`WITH Payments AS (
     SELECT p.Paymethod,ISNULL(p.Amount,0) Amount FROM PosPayment p INNER JOIN PosMaster m
       ON m.CompanyCode=p.CompanyCode AND m.Branch=p.Branch AND m.TransactionNumber=p.TransactionNumber
-      WHERE p.CompanyCode=@companyCode AND m.BillStatus='P' AND ISNULL(p.Cancel,'N')<>'Y' AND p.TranDate>=@fromDate AND p.TranDate<DATEADD(day,1,@toDate) ${paymentScope} ${detailScope("PosDetail")}
+      WHERE p.CompanyCode=@companyCode AND ISNULL(p.Cancel,'N')<>'Y' AND p.TranDate>=@fromDate AND p.TranDate<DATEADD(day,1,@toDate) ${paymentScope} ${detailScope("PosDetail")}
     UNION ALL
     SELECT p.Paymethod,ISNULL(p.Amount,0) FROM UnPosPayment p INNER JOIN UnPosMaster m
       ON m.CompanyCode=p.CompanyCode AND m.Branch=p.Branch AND m.TransactionNumber=p.TransactionNumber
-      WHERE p.CompanyCode=@companyCode AND m.BillStatus='P' AND ISNULL(p.Cancel,'N')<>'Y' AND p.TranDate>=@fromDate AND p.TranDate<DATEADD(day,1,@toDate) ${paymentScope} ${detailScope("UnPosDetail")}
-      AND NOT EXISTS (SELECT 1 FROM PosMaster pm WHERE pm.CompanyCode=p.CompanyCode AND pm.Branch=p.Branch AND pm.TransactionNumber=p.TransactionNumber AND pm.BillStatus='P')
+      WHERE p.CompanyCode=@companyCode AND ISNULL(p.Cancel,'N')<>'Y' AND p.TranDate>=@fromDate AND p.TranDate<DATEADD(day,1,@toDate) ${paymentScope} ${detailScope("UnPosDetail")}
+      
   ) SELECT CASE Paymethod WHEN '1' THEN 'Cash' WHEN '2' THEN 'Card' WHEN '3' THEN 'Credit' ELSE 'Other' END Label,SUM(Amount) Amount FROM Payments GROUP BY Paymethod ORDER BY Amount DESC;`);
   const rows = result.recordset || [];
   const total = rows.reduce((sum, row) => sum + Number(row.Amount || 0), 0);
@@ -264,8 +269,8 @@ async function runTransfer(pool, user, filters) {
   const result=await request.query(`SELECT COALESCE(b1.BranchName,d.Branch)+' to '+COALESCE(b2.BranchName,d.Branchto) Label,
     SUM(ISNULL(d.Quantity,0)) SentQuantity,SUM(CASE WHEN d.RecStatus='Y' THEN ISNULL(d.RecQuantity,0) ELSE 0 END) ReceivedQuantity,
     SUM(ISNULL(d.Quantity,0)-CASE WHEN d.RecStatus='Y' THEN ISNULL(d.RecQuantity,0) ELSE 0 END) PendingQuantity
-    FROM PosTransferD d INNER JOIN PosTransferM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber
-    LEFT JOIN BranchFile b1 ON b1.BranchCode=d.Branch LEFT JOIN BranchFile b2 ON b2.BranchCode=d.Branchto
+    FROM PosTransferD d INNER JOIN PosTransferM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber AND m.Branch=d.Branch
+    LEFT JOIN BranchFile b1 ON b1.CompanyCode=@companyCode AND b1.BranchCode=d.Branch LEFT JOIN BranchFile b2 ON b2.CompanyCode=@companyCode AND b2.BranchCode=d.Branchto
     WHERE d.CompanyCode=@companyCode AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y'
       AND m.TransactionDate>=@fromDate AND m.TransactionDate<DATEADD(day,1,@toDate) ${extra}
     GROUP BY COALESCE(b1.BranchName,d.Branch)+' to '+COALESCE(b2.BranchName,d.Branchto) ORDER BY SentQuantity DESC;`);
@@ -278,7 +283,7 @@ async function runSimpleInventory(pool,user,filters,type){
   addListFilter(request,clauses,"d.Branch","simpleBranch",filters.branches);addListFilter(request,clauses,"d.StoreCode","simpleStore",filters.stores);addListFilter(request,clauses,"d.BarCode","simpleBarcode",filters.barcodes);const productFilters=[];addProductFilters(request,productFilters,"bvFilter",filters,"simpleProduct");if(productFilters.length)clauses.push(`EXISTS (SELECT 1 FROM BarcodeView bvFilter WHERE bvFilter.BarCode=d.BarCode AND ${productFilters.join(" AND ")})`);const scope=clauses.length?`AND ${clauses.join(" AND ")}`:"";
   const groupClause=isTake?"":"GROUP BY ISNULL(d.EntryType,'Unknown')";
   const result=await request.query(`SELECT ${isTake?"'Physical Count'":"ISNULL(d.EntryType,'Unknown')"} Label,SUM(ISNULL(d.Quantity,0)) Quantity,
-    SUM(ISNULL(d.RetailAmount,0)) Amount FROM ${detail} d INNER JOIN ${master} m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber
+    SUM(ISNULL(d.RetailAmount,0)) Amount FROM ${detail} d INNER JOIN ${master} m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber AND m.Branch=d.Branch
     WHERE d.CompanyCode=@companyCode AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y'
       AND m.TransactionDate>=@fromDate AND m.TransactionDate<DATEADD(day,1,@toDate) ${scope}
     ${groupClause};`);
@@ -295,18 +300,18 @@ async function runStock(pool,user,filters,dimension=null){
   const dimensionLabel=stockDimension?stockDimension.select.replace(/\bs\./g,"f."):null;
   const result=await request.query(`WITH Movements AS (
     SELECT Branch,StoreCode,BarCode,ISNULL(Quantity,0) Qty FROM PosBarOpen WHERE CompanyCode=@companyCode
-    UNION ALL SELECT d.Branch,d.StoreCode,d.BarCode,ISNULL(d.Quantity,0) FROM PosPurchaseD d INNER JOIN PosPurchaseM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber WHERE d.CompanyCode=@companyCode AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y' AND m.Date<DATEADD(day,1,@toDate)
-    UNION ALL SELECT d.Branch,d.StoreCode,d.BarCode,-ISNULL(d.Quantity,0) FROM PosPReturnD d INNER JOIN PosPReturnM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber WHERE d.CompanyCode=@companyCode AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y' AND m.Date<DATEADD(day,1,@toDate)
-    UNION ALL SELECT d.Branch,d.StoreCode,d.BarCode,-ISNULL(d.Quantity,0) FROM PosDetail d INNER JOIN PosMaster m ON m.CompanyCode=d.CompanyCode AND m.Branch=d.Branch AND m.TransactionNumber=d.TransactionNumber WHERE d.CompanyCode=@companyCode AND m.BillStatus='P' AND ISNULL(d.Cancel,'N')<>'Y' AND d.TranDate<DATEADD(day,1,@toDate)
-    UNION ALL SELECT d.Branch,d.StoreCode,d.BarCode,-ISNULL(d.Quantity,0) FROM UnPosDetail d INNER JOIN UnPosMaster m ON m.CompanyCode=d.CompanyCode AND m.Branch=d.Branch AND m.TransactionNumber=d.TransactionNumber WHERE d.CompanyCode=@companyCode AND m.BillStatus='P' AND ISNULL(d.Cancel,'N')<>'Y' AND d.TranDate<DATEADD(day,1,@toDate) AND NOT EXISTS(SELECT 1 FROM PosMaster pm WHERE pm.CompanyCode=d.CompanyCode AND pm.Branch=d.Branch AND pm.TransactionNumber=d.TransactionNumber AND pm.BillStatus='P')
-    UNION ALL SELECT d.Branch,d.StoreCodeFrom,d.BarCode,-ISNULL(d.Quantity,0) FROM PosTransferD d INNER JOIN PosTransferM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber WHERE d.CompanyCode=@companyCode AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y' AND m.TransactionDate<DATEADD(day,1,@toDate)
-    UNION ALL SELECT d.Branchto,d.StoreCodeTo,d.BarCode,ISNULL(d.RecQuantity,0) FROM PosTransferD d INNER JOIN PosTransferM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber WHERE d.CompanyCode=@companyCode AND d.RecStatus='Y' AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y' AND d.RecDate<DATEADD(day,1,@toDate)
-    UNION ALL SELECT d.Branch,d.StoreCode,d.BarCode,CASE WHEN d.EntryType='IN' THEN ISNULL(d.Quantity,0) WHEN d.EntryType='OUT' THEN -ISNULL(d.Quantity,0) ELSE 0 END FROM PosStockAdjD d INNER JOIN PosStockAdjM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber WHERE d.CompanyCode=@companyCode AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y' AND m.TransactionDate<DATEADD(day,1,@toDate)
+    UNION ALL SELECT d.Branch,d.StoreCode,d.BarCode,ISNULL(d.Quantity,0) FROM PosPurchaseD d INNER JOIN PosPurchaseM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber AND m.Branch=d.Branch WHERE d.CompanyCode=@companyCode AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y' AND m.Date<DATEADD(day,1,@toDate)
+    UNION ALL SELECT d.Branch,d.StoreCode,d.BarCode,-ISNULL(d.Quantity,0) FROM PosPReturnD d INNER JOIN PosPReturnM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber AND m.Branch=d.Branch WHERE d.CompanyCode=@companyCode AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y' AND m.Date<DATEADD(day,1,@toDate)
+    UNION ALL SELECT d.Branch,d.StoreCode,d.BarCode,-ISNULL(d.Quantity,0) FROM PosDetail d WHERE d.CompanyCode=@companyCode AND d.TranDate<DATEADD(day,1,@toDate)
+    UNION ALL SELECT d.Branch,d.StoreCode,d.BarCode,-ISNULL(d.Quantity,0) FROM UnPosDetail d WHERE d.CompanyCode=@companyCode AND d.TranDate<DATEADD(day,1,@toDate)
+    UNION ALL SELECT d.Branch,d.StoreCodeFrom,d.BarCode,-ISNULL(d.Quantity,0) FROM PosTransferD d INNER JOIN PosTransferM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber AND m.Branch=d.Branch WHERE d.CompanyCode=@companyCode AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y' AND m.TransactionDate<DATEADD(day,1,@toDate)
+    UNION ALL SELECT d.Branchto,d.StoreCodeTo,d.BarCode,ISNULL(d.RecQuantity,0) FROM PosTransferD d INNER JOIN PosTransferM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber AND m.Branch=d.Branch WHERE d.CompanyCode=@companyCode AND d.RecStatus='Y' AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y' AND d.RecDate<DATEADD(day,1,@toDate)
+    UNION ALL SELECT d.Branch,d.StoreCode,d.BarCode,CASE WHEN d.EntryType='IN' THEN ISNULL(d.Quantity,0) WHEN d.EntryType='OUT' THEN -ISNULL(d.Quantity,0) ELSE 0 END FROM PosStockAdjD d INNER JOIN PosStockAdjM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber AND m.Branch=d.Branch WHERE d.CompanyCode=@companyCode AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y' AND m.TransactionDate<DATEADD(day,1,@toDate)
   ), Filtered AS (SELECT x.* FROM Movements x ${extra})
   ${stockDimension?`SELECT TOP 100 ${dimensionLabel} Label,MIN(f.BarCode) BarCode,SUM(f.Qty) Quantity,`:`SELECT TOP 100 COALESCE(NULLIF(bv.DesignDesc,''),f.BarCode) Label,f.BarCode,COALESCE(bf.BranchName,f.Branch) BranchName,COALESCE(sr.Name,f.StoreCode) StoreName,SUM(f.Qty) Quantity,`}
     SUM(f.Qty*ISNULL(bv.CostPrice,0)) CostValue,SUM(f.Qty*ISNULL(bv.PurchasePrice,0)) PurchaseValue,SUM(f.Qty*ISNULL(bv.RetailPrice,0)) RetailValue,SUM(f.Qty*ISNULL(bv.DiscountPrice,0)) DiscountValue,
     SUM(SUM(f.Qty)) OVER() OverallQuantity,SUM(SUM(f.Qty*ISNULL(bv.CostPrice,0))) OVER() OverallCostValue,SUM(SUM(f.Qty*ISNULL(bv.RetailPrice,0))) OVER() OverallRetailValue
-    FROM Filtered f LEFT JOIN BarcodeView bv ON bv.BarCode=f.BarCode LEFT JOIN BranchFile bf ON bf.BranchCode=f.Branch LEFT JOIN StockRoom sr ON sr.Code=f.StoreCode
+    FROM Filtered f LEFT JOIN BarcodeView bv ON bv.BarCode=f.BarCode LEFT JOIN BranchFile bf ON bf.CompanyCode=@companyCode AND bf.BranchCode=f.Branch LEFT JOIN StockRoom sr ON sr.Code=f.StoreCode AND sr.Branch=f.Branch
     GROUP BY ${stockDimension?dimensionLabel:"COALESCE(NULLIF(bv.DesignDesc,''),f.BarCode),f.BarCode,COALESCE(bf.BranchName,f.Branch),COALESCE(sr.Name,f.StoreCode)"}
     HAVING SUM(f.Qty)<>0 ORDER BY ABS(SUM(f.Qty)) DESC;`);
   const rows=result.recordset||[]; const total=Number(rows[0]?.OverallQuantity||0);
