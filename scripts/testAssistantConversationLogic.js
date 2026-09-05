@@ -17,8 +17,29 @@ const sandbox = {
     if (name === "../ai/knowledge") return { allowedTables: [], businessRules: [], tablePurposes: {}, selectRelevantTables: () => [], trainingContextForTables: () => "" };
     if (name === "../ai/sqlSafety") return { validateReadOnlySql: (sql) => ({ sql }) };
     if (name === "./ollamaService") return { ollamaChat: async () => ({}) };
-    if (name === "./reportService") return {};
+    if (name === "./reportService") return {
+      normalizeFilters(value = {}) {
+        return {
+          fromDate: value.fromDate || "2026-09-01",
+          toDate: value.toDate || "2026-09-05",
+          branches: Array.isArray(value.branches) ? value.branches : [],
+          stores: Array.isArray(value.stores) ? value.stores : [],
+          barcodes: Array.isArray(value.barcodes) ? value.barcodes : [],
+          accounts: Array.isArray(value.accounts) ? value.accounts : [],
+          brands: Array.isArray(value.brands) ? value.brands : [],
+          categories: Array.isArray(value.categories) ? value.categories : [],
+          seasons: [], styles: [], colors: [], sizes: [], designs: [], fabrics: [], departments: [], genders: [], cobrands: [], suppliers: [], subcategories: [], substyles: [], styleclasses: [], styleclass1: [], styleclass2: [], subdepartments: [], fabricclasses: [], colorclasses: [],
+        };
+      },
+    };
+    if (name === "./accountingReportService") return {};
+    if (name === "./aiDatabaseService") return { getDatabaseCatalog: async () => ({ tables:[] }), compactSchema: () => "" };
     if (name === "../ai/conversationTraining") return { getConversationTrainingPrompt: () => "" };
+    if (name === "../ai/posLanguage") return require("../ai/posLanguage");
+    if (name === "../ai/questionBankTraining") return { getQuestionBankTrainingPrompt: () => "" };
+    if (name === "../ai/trainingIntentResolver") return require("../ai/trainingIntentResolver");
+    if (name === "../ai/schemaTrainingAnswer") return { answerSchemaQuestion: () => null, isSchemaKnowledgeQuestion: () => false };
+    if (name === "../ai/trainingSemanticRouter") return require("../ai/trainingSemanticRouter");
     throw new Error(`Unexpected require: ${name}`);
   },
 };
@@ -86,5 +107,34 @@ assert(clarify && /period/i.test(clarify.answer) && clarify.options.length === 3
 
 const urduClarify = ai.clarificationForQuestion("سیلز پیش گوئی بتائیں", "سیلز پیش گوئی بتائیں", [], {}, "urdu");
 assert(urduClarify && /مدت/.test(urduClarify.answer), "Urdu forecast clarification failed");
+
+
+
+const rememberedFilters = ai.inheritConversationFilters(
+  "branch wise?",
+  { fromDate: "2026-09-05", toDate: "2026-09-05", branches: [] },
+  { filters: { fromDate: "2026-09-01", toDate: "2026-09-04", branches: ["001"] } },
+);
+assert(rememberedFilters.fromDate === "2026-09-01" && rememberedFilters.toDate === "2026-09-04", "Follow-up did not inherit prior date scope");
+assert(rememberedFilters.branches[0] === "001", "Follow-up did not inherit prior branch scope");
+
+const memory = ai.buildConversationMemory({
+  previous: null,
+  originalQuestion: "is month sales batao",
+  resolvedQuestion: "is month sales batao",
+  semanticUnderstanding: { intent: { domain: "sales", dimension: "summary" } },
+  filters: { fromDate: "2026-09-01", toDate: "2026-09-05", branches: ["001"] },
+  result: {
+    mode: "report",
+    answer: "Net Sales: Rs 100,000",
+    scope: "2026-09-01 to 2026-09-05 · Branch: 001",
+    keyPoints: ["Sale Amount: Rs 110,000", "Return Amount: Rs 10,000"],
+    metrics: [{ key: "netSales", label: "Net Sales", format: "currency", value: 100000 }],
+  },
+  extra: { route: "RPT_02_001_SALES_SUMMARY" },
+});
+assert(memory.version === 3, "Structured memory version was not upgraded");
+assert(memory.turns.length === 1 && /100,000/.test(memory.turns[0].answerSummary), "Structured memory did not preserve prior answer context");
+assert(memory.turns[0].metrics[0].value === 100000, "Structured memory did not preserve prior metric context");
 
 console.log("Assistant conversation logic tests passed");

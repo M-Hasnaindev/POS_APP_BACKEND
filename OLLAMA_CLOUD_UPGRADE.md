@@ -53,7 +53,7 @@ Set these backend-only environment variables in the deployment platform:
 ```text
 OLLAMA_BASE_URL=https://ollama.com
 OLLAMA_API_KEY=<NEW_SECRET_KEY>
-OLLAMA_MODEL=deepseek-v4-pro
+OLLAMA_MODEL=gpt-oss:20b-cloud
 OLLAMA_MODEL_CANDIDATES=deepseek-v4-pro,deepseek-v4-pro:0813,deepseek-v4-pro:cloud,deepseek-v4-pro:0813-cloud
 OLLAMA_TIMEOUT_MS=120000
 OLLAMA_ANALYSIS_TIMEOUT_MS=48000

@@ -10,10 +10,12 @@ const { getBranchWiseStock } = require("./posStockAnalyticsService");
 const { getDocumentedTableNames, getKnowledgeContext } = require("./aiKnowledgeService");
 const { buildVisualization } = require("./aiVisualizationService");
 const { getConversationTrainingPrompt } = require("../ai/conversationTraining");
+const { canonicalizeForRouting } = require("../ai/posLanguage");
+const { ollamaChatRaw } = require("./ollamaService");
 
 const MAX_TOOL_ROUNDS = 5;
 const DEFAULT_OLLAMA_URL = "https://ollama.com";
-const DEFAULT_OLLAMA_MODEL = "deepseek-v4-pro";
+const DEFAULT_OLLAMA_MODEL = "gpt-oss:20b-cloud";
 const CORE_POS_TABLES = getDocumentedTableNames();
 
 const tools = [
@@ -95,54 +97,27 @@ const ollamaTools = tools.map(({ name, description, parameters }) => ({
 
 async function createLocalAiResponse(messages) {
   const config = localAiConfig();
-  if (config.cloudHost && !config.authToken) {
-    const error = new Error("OLLAMA_API_KEY is required for Ollama Cloud");
-    error.code = "OLLAMA_API_KEY_MISSING";
-    error.publicMessage = "Ollama Cloud API key is not configured on the backend.";
-    throw error;
-  }
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   const startedAt = Date.now();
   console.log("[AI POS][Ollama] Chat request", {
     url: `${config.baseUrl}/api/chat`,
-    model: config.model,
+    configuredModel: config.model,
     messageCount: messages.length,
     toolCount: ollamaTools.length,
   });
 
   try {
-    const response = await fetch(`${config.baseUrl}/api/chat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {}),
-      },
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        tools: ollamaTools,
-        stream: false,
-        think: false,
-        options: {
-          temperature: 0,
-          num_ctx: Math.max(4096, Math.min(Number(process.env.OLLAMA_NUM_CTX || 8192), 8192)),
-          num_predict: Math.max(240, Math.min(Number(process.env.OLLAMA_NUM_PREDICT || 420), 700)),
-        },
-        ...(config.cloudHost ? {} : { keep_alive: "30m" }),
-      }),
-      signal: controller.signal,
+    // Use the shared Ollama router instead of calling one hard-coded model.
+    // This preserves tool calls while allowing automatic starter-model
+    // fallback when a paid model is rejected by the current Ollama plan.
+    const body = await ollamaChatRaw(messages, {
+      temperature: 0,
+      timeoutMs: config.timeoutMs,
+      numCtx: Math.max(4096, Math.min(Number(process.env.OLLAMA_NUM_CTX || 8192), 16384)),
+      numPredict: Math.max(240, Math.min(Number(process.env.OLLAMA_NUM_PREDICT || 420), 900)),
+      think: false,
+      tools: ollamaTools,
+      keepAlive: config.cloudHost ? null : "30m",
     });
-    const body = await response.json().catch(() => null);
-    if (!response.ok) {
-      const message = body?.error || `Ollama request failed (${response.status})`;
-      const error = new Error(message);
-      error.code = config.cloudHost ? "OLLAMA_CLOUD_UNAVAILABLE" : "LOCAL_AI_UNAVAILABLE";
-      error.publicMessage = config.cloudHost
-        ? "Ollama Cloud request failed. Check the API key, model, and cloud availability."
-        : "Local AI service is unavailable. Start Ollama and make sure the model is installed.";
-      throw error;
-    }
     console.log("[AI POS][Ollama] Chat response received", {
       model: body?.model || config.model,
       toolCalls: body?.message?.tool_calls?.length || 0,
@@ -153,21 +128,12 @@ async function createLocalAiResponse(messages) {
     });
     return body;
   } catch (error) {
-    if (error.name === "AbortError") {
-      const timeoutError = new Error(config.cloudHost ? "Ollama Cloud request timed out" : "Local Ollama request timed out");
-      timeoutError.code = config.cloudHost ? "OLLAMA_CLOUD_TIMEOUT" : "LOCAL_AI_TIMEOUT";
-      timeoutError.publicMessage = "AI response timed out. Please try again.";
-      throw timeoutError;
-    }
-    if (error.cause?.code === "ECONNREFUSED" || error.message === "fetch failed") {
-      error.code = config.cloudHost ? "OLLAMA_CLOUD_UNAVAILABLE" : "LOCAL_AI_UNAVAILABLE";
+    if (!error.publicMessage) {
       error.publicMessage = config.cloudHost
-        ? "Ollama Cloud could not be reached. Please try again."
-        : "Local AI is not running. Start Ollama, then try again.";
+        ? "Ollama Cloud could not complete this request. The backend tried the available fallback models."
+        : "Local AI is unavailable. Start Ollama, then try again.";
     }
     throw error;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -282,7 +248,7 @@ Live database rules:
 - All monetary values in this POS database are Pakistani Rupees. Always label them as Rs or PKR; never use the Indian rupee symbol.
 - Do not expose SQL unless the user explicitly asks for it.
 
-${getConversationTrainingPrompt()}`;
+${getConversationTrainingPrompt(message)}`;
 }
 
 function requiresLiveDatabase(message) {
@@ -293,7 +259,7 @@ function requiresLiveDatabase(message) {
 }
 
 function schemaHintsForQuestion(message) {
-  const text = String(message || "").toLowerCase();
+  const text = canonicalizeForRouting(message);
   if (/\b(sale|sales|sold|selling|bill|invoice|revenue|bikri|farokht|aaj ki sale|aj ki sale)\b/.test(text)) {
     if (/\b(product|item|barcode|design|quantity|qty)\b/.test(text)) {
       return ["PosDetail", "UnPosDetail", "BarcodeView"];
@@ -783,6 +749,7 @@ async function createPosAssistantReply(context) {
     { role: "user", content: userPrompt },
   ];
   let lastAnswer = "";
+  let activeModel = config.model;
   const responseId = `ollama-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   console.log("[AI POS] Conversation starting", {
@@ -797,6 +764,7 @@ async function createPosAssistantReply(context) {
 
   for (let round = 1; round <= MAX_TOOL_ROUNDS; round += 1) {
     const response = await createLocalAiResponse(messages);
+    activeModel = String(response?.model || activeModel || config.model);
     const assistantMessage = response?.message || {};
     const calls = (assistantMessage.tool_calls || []).map((call, index) => ({
       name: call?.function?.name,
@@ -891,7 +859,7 @@ async function createPosAssistantReply(context) {
       userId: context.userId,
       companyCode: context.companyCode,
       provider: config.cloudHost ? "ollama-cloud" : "ollama-local",
-      model: config.model,
+      model: activeModel,
       toolCallsUsed,
       question: context.message,
       answer: lastAnswer,
@@ -899,7 +867,7 @@ async function createPosAssistantReply(context) {
     return {
       answer: lastAnswer,
       responseId,
-      model: config.model,
+      model: activeModel,
       toolCallsUsed,
       rows: lastQueryRows,
       visualization: buildVisualization(lastQueryRows, context.message),

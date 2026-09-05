@@ -1,10 +1,11 @@
 const knowledge = require("../ai/trainingKnowledge.generated.json");
 const { dashboardCompatibleRules } = require("../ai/conversationTraining");
+const { tokenizeBusiness } = require("../ai/posLanguage");
 
 const ALWAYS_RELEVANT = new Set(["branchfile", "stockroom", "barcodeview"]);
 
 function tokenize(value) {
-  return new Set(String(value || "").toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length >= 3));
+  return new Set(tokenizeBusiness(value).filter((token) => token.length >= 3));
 }
 
 function scoreTokens(left, right) {

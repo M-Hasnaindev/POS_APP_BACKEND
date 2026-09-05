@@ -1,5 +1,15 @@
 const aiConfig = require("../config/ai");
 
+// Runtime model routing state. A paid/pro model can be configured as primary
+// while a Free/starter account only has access to smaller cloud models. When
+// Ollama explicitly rejects one model for plan/usage reasons, skip that model
+// for a short cooldown and keep the Assistant alive on the next accessible
+// candidate. A successful fallback becomes sticky for this Node process so
+// every chat turn does not repeat the same rejected paid-model request.
+const blockedModels = new Map();
+const blockedModelErrors = new Map();
+let preferredRuntimeModel = null;
+
 function cleanModelText(value) {
   return String(value || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 }
@@ -66,12 +76,59 @@ function isModelAliasError(status, message) {
   return /model|manifest|not found|does not exist|unknown/i.test(String(message || ""));
 }
 
+function isModelAccessError(status, message) {
+  const code = Number(status);
+  const text = String(message || "").toLowerCase();
+  if (![400, 402, 403].includes(code)) return false;
+  return /requires? (?:a )?subscription|subscription or extra usage|extra usage|upgrade for access|add extra usage|usage credits?|insufficient (?:usage|credits?|balance)|not available (?:on|for) (?:your|this) plan|plan does not include|model access/.test(text);
+}
+
 function authError(status, message) {
-  if (![401, 403].includes(Number(status))) return null;
+  if (![401, 403].includes(Number(status)) || isModelAccessError(status, message)) return null;
   const error = new Error(message || "Ollama Cloud authentication failed");
   error.code = "OLLAMA_AUTH_ERROR";
   error.publicMessage = "Ollama Cloud authentication failed. Check or rotate OLLAMA_API_KEY.";
   return error;
+}
+
+function modelAccessError(status, message, model) {
+  if (!isModelAccessError(status, message)) return null;
+  const error = new Error(message || `Ollama model '${model}' is not available on the current plan`);
+  error.status = Number(status);
+  error.code = "OLLAMA_MODEL_ACCESS_ERROR";
+  error.model = String(model || "");
+  error.publicMessage = "The preferred cloud model is not available on this Ollama plan. The backend will try an accessible fallback model.";
+  return error;
+}
+
+function blockModel(model, error) {
+  const key = String(model || "").trim();
+  if (!key) return;
+  blockedModels.set(key, Date.now() + aiConfig.ollamaModelAccessCooldownMs);
+  blockedModelErrors.set(key, error);
+  if (preferredRuntimeModel === key) preferredRuntimeModel = null;
+}
+
+function modelIsBlocked(model) {
+  const key = String(model || "").trim();
+  const until = blockedModels.get(key) || 0;
+  if (!until) return false;
+  if (until <= Date.now()) {
+    blockedModels.delete(key);
+    blockedModelErrors.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function orderedCandidates(candidates, allowSticky = true) {
+  const unique = [...new Set((candidates || []).map((value) => String(value || "").trim()).filter(Boolean))];
+  const available = unique.filter((model) => !modelIsBlocked(model));
+  if (!available.length) return [];
+  if (allowSticky && preferredRuntimeModel && available.includes(preferredRuntimeModel)) {
+    return [preferredRuntimeModel, ...available.filter((model) => model !== preferredRuntimeModel)];
+  }
+  return available;
 }
 
 async function chatWithModel(model, messages, {
@@ -81,6 +138,8 @@ async function chatWithModel(model, messages, {
   numCtx,
   numPredict,
   think,
+  tools,
+  keepAlive,
 } = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -95,6 +154,8 @@ async function chatWithModel(model, messages, {
         stream: false,
         think: thinkValueForModel(model, think),
         ...(json ? { format: "json" } : {}),
+        ...(Array.isArray(tools) && tools.length ? { tools } : {}),
+        ...(keepAlive ? { keep_alive: keepAlive } : {}),
         options: {
           temperature,
           num_ctx: numCtx,
@@ -106,6 +167,8 @@ async function chatWithModel(model, messages, {
     const body = await response.json().catch(() => null);
     if (!response.ok) {
       const message = bodyErrorMessage(body, response.status);
+      const access = modelAccessError(response.status, message, model);
+      if (access) throw access;
       const auth = authError(response.status, message);
       if (auth) throw auth;
       const error = new Error(message);
@@ -127,6 +190,61 @@ async function chatWithModel(model, messages, {
   }
 }
 
+async function ollamaChatRaw(messages, {
+  json = false,
+  temperature = 0.1,
+  timeoutMs = aiConfig.ollamaTimeoutMs,
+  numCtx = aiConfig.ollamaNumCtx,
+  numPredict = aiConfig.ollamaNumPredict,
+  think = aiConfig.ollamaThinking,
+  model = null,
+  tools = null,
+  keepAlive = null,
+} = {}) {
+  const configured = model ? [String(model).trim()] : aiConfig.ollamaModelCandidates;
+  const candidates = orderedCandidates(configured, !model);
+  let lastError;
+
+  if (!candidates.length) {
+    const blocked = configured.map((name) => blockedModelErrors.get(String(name).trim())).filter(Boolean);
+    const error = blocked[0] || new Error("No Ollama model candidate is currently available");
+    if (!error.code) error.code = "OLLAMA_MODEL_ACCESS_ERROR";
+    throw error;
+  }
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    try {
+      const body = await chatWithModel(candidate, messages, {
+        json,
+        temperature,
+        timeoutMs,
+        numCtx,
+        numPredict,
+        think,
+        tools,
+        keepAlive,
+      });
+      if (!model) preferredRuntimeModel = candidate;
+      return body;
+    } catch (error) {
+      lastError = error;
+      const retryableAlias = error.code === "OLLAMA_MODEL_ALIAS_ERROR";
+      const retryableAccess = error.code === "OLLAMA_MODEL_ACCESS_ERROR";
+      if (retryableAccess) blockModel(candidate, error);
+
+      const hasNext = index < candidates.length - 1;
+      if ((retryableAlias || retryableAccess) && hasNext) {
+        const reason = retryableAccess ? "not included in the current Ollama plan/usage" : "alias unavailable";
+        console.warn(`[Ollama] Model '${candidate}' ${reason}; trying fallback '${candidates[index + 1]}'`);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError || new Error("Ollama request failed");
+}
+
 async function ollamaChat(messages, {
   json = false,
   temperature = 0.1,
@@ -136,10 +254,16 @@ async function ollamaChat(messages, {
   think = aiConfig.ollamaThinking,
   model = null,
 } = {}) {
-  const candidates = model
-    ? [String(model).trim()]
-    : aiConfig.ollamaModelCandidates;
+  const configured = model ? [String(model).trim()] : aiConfig.ollamaModelCandidates;
+  const candidates = orderedCandidates(configured, !model);
   let lastError;
+
+  if (!candidates.length) {
+    const blocked = configured.map((name) => blockedModelErrors.get(String(name).trim())).filter(Boolean);
+    const error = blocked[0] || new Error("No Ollama model candidate is currently available");
+    if (!error.code) error.code = "OLLAMA_MODEL_ACCESS_ERROR";
+    throw error;
+  }
 
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
@@ -154,12 +278,21 @@ async function ollamaChat(messages, {
       });
       const text = cleanModelText(body?.message?.content);
       if (!text) throw new Error("Ollama returned an empty response");
+      if (!model) preferredRuntimeModel = candidate;
       return json ? parseJsonLoose(text) : text;
     } catch (error) {
       lastError = error;
-      const canRetryAlias = error.code === "OLLAMA_MODEL_ALIAS_ERROR" && index < candidates.length - 1;
-      if (!canRetryAlias) throw error;
-      console.warn(`[Ollama] Model alias '${candidate}' unavailable; trying '${candidates[index + 1]}'`);
+      const retryableAlias = error.code === "OLLAMA_MODEL_ALIAS_ERROR";
+      const retryableAccess = error.code === "OLLAMA_MODEL_ACCESS_ERROR";
+      if (retryableAccess) blockModel(candidate, error);
+
+      const hasNext = index < candidates.length - 1;
+      if ((retryableAlias || retryableAccess) && hasNext) {
+        const reason = retryableAccess ? "not included in the current Ollama plan/usage" : "alias unavailable";
+        console.warn(`[Ollama] Model '${candidate}' ${reason}; trying fallback '${candidates[index + 1]}'`);
+        continue;
+      }
+      throw error;
     }
   }
   throw lastError || new Error("Ollama request failed");
@@ -193,6 +326,9 @@ async function checkOllama() {
       available: true,
       provider: aiConfig.ollamaCloud ? "ollama-cloud" : "ollama-local",
       model: aiConfig.ollamaModel,
+      activeRuntimeModel: preferredRuntimeModel || null,
+      modelCandidates: aiConfig.ollamaModelCandidates,
+      blockedModels: [...blockedModels.entries()].filter(([, until]) => until > Date.now()).map(([name, until]) => ({ name, retryAfter: new Date(until).toISOString() })),
       authenticated: aiConfig.ollamaCloud ? Boolean(aiConfig.ollamaApiKey) : undefined,
       modelVisible: visible,
       models: models.slice(0, 50),
@@ -209,4 +345,15 @@ async function checkOllama() {
   }
 }
 
-module.exports = { ollamaChat, checkOllama, thinkValueForModel };
+function getOllamaRuntimeState() {
+  return {
+    configuredModel: aiConfig.ollamaModel,
+    activeRuntimeModel: preferredRuntimeModel || null,
+    candidates: [...aiConfig.ollamaModelCandidates],
+    blockedModels: [...blockedModels.entries()]
+      .filter(([, until]) => until > Date.now())
+      .map(([name, until]) => ({ name, retryAfter: new Date(until).toISOString(), reason: blockedModelErrors.get(name)?.message || "model access unavailable" })),
+  };
+}
+
+module.exports = { ollamaChat, ollamaChatRaw, checkOllama, thinkValueForModel, getOllamaRuntimeState, isModelAccessError };

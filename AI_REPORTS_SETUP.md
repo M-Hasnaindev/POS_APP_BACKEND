@@ -21,7 +21,7 @@ Ollama never receives MSSQL credentials and never opens a DB connection itself. 
 ```env
 OLLAMA_BASE_URL=https://ollama.com
 OLLAMA_API_KEY=YOUR_BACKEND_ONLY_KEY
-OLLAMA_MODEL=deepseek-v4-pro
+OLLAMA_MODEL=gpt-oss:20b-cloud
 OLLAMA_TIMEOUT_MS=120000
 AI_SQL_TIMEOUT_MS=60000
 AI_MAX_ROWS=200

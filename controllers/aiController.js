@@ -5,12 +5,14 @@ const {
   fallbackReportNarrative,
   answerAssistant,
 } = require("../services/aiService");
-const { checkOllama } = require("../services/ollamaService");
+const { checkOllama, getOllamaRuntimeState } = require("../services/ollamaService");
 const {
   getCatalogForTenant,
   getOllamaHealth,
 } = require("../services/openaiPosService");
 const { resolveAiUserContext } = require("../services/aiUserScopeService");
+const { getQuestionBankStats } = require("../ai/questionBankTraining");
+const { getIntentIndexStats } = require("../ai/trainingSemanticRouter");
 
 exports.health = async (req, res) => {
   const [ollama, catalog] = await Promise.all([
@@ -20,8 +22,19 @@ exports.health = async (req, res) => {
   return res.json({
     success: true,
     tenantId: req.user.tenantId,
-    ollama,
+    ollama: { ...ollama, runtime: getOllamaRuntimeState() },
     catalog: { generatedAt: catalog.generatedAt, tableCount: catalog.tables.length },
+    assistantTraining: {
+      ...getQuestionBankStats(),
+      semanticIntentIndex: getIntentIndexStats(),
+    },
+    assistantSafety: {
+      policy: "10k-intent-vote -> explicit-intent-cross-check -> verified-live-sql -> clarify-not-guess",
+      plannerMinimumConfidence: 0.82,
+      semanticRouteMinimumConfidence: 0.62,
+      semanticAmbiguityGuard: true,
+      exactLiveNumbersOnly: true,
+    },
   });
 };
 
@@ -131,14 +144,89 @@ function compactAssistantHistory(value) {
   if (!Array.isArray(value)) return [];
   return value
     .filter((item) => item && (item.role === "user" || item.role === "assistant"))
-    .slice(-10)
+    .slice(-24)
     .map((item) => ({
       role: item.role,
-      // Conversation can be unlimited on the phone; only a compact recent
-      // window is sent to the model so message #20/#100 is not slower than #2.
-      content: String(item.content || "").trim().slice(0, 700),
+      // Keep enough natural-language context for pronouns and chained follow-ups.
+      // Long-lived factual scope is carried separately in structured memory, so
+      // the model never needs the whole conversation dumped into every request.
+      content: String(item.content || "").trim().slice(0, 1200),
     }))
     .filter((item) => item.content);
+}
+
+function compactAssistantMemory(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const asList = (input, max = 30) => Array.isArray(input)
+    ? input.map((item) => String(item ?? "").trim()).filter(Boolean).slice(0, max)
+    : [];
+  const filters = value.filters && typeof value.filters === "object" ? value.filters : {};
+  const safeFilters = {
+    fromDate: String(filters.fromDate || "").slice(0, 10),
+    toDate: String(filters.toDate || "").slice(0, 10),
+    branches: asList(filters.branches),
+    stores: asList(filters.stores),
+    accounts: asList(filters.accounts),
+    barcodes: asList(filters.barcodes),
+    brands: asList(filters.brands || filters.brand),
+    categories: asList(filters.categories || filters.category),
+    suppliers: asList(filters.suppliers || filters.supplier),
+    designs: asList(filters.designs || filters.design),
+    colors: asList(filters.colors || filters.color),
+    sizes: asList(filters.sizes || filters.size),
+    seasons: asList(filters.seasons),
+    styles: asList(filters.styles),
+    fabrics: asList(filters.fabrics),
+    departments: asList(filters.departments),
+    genders: asList(filters.genders),
+    cobrands: asList(filters.cobrands),
+    subcategories: asList(filters.subcategories),
+    substyles: asList(filters.substyles),
+    styleclasses: asList(filters.styleclasses),
+    styleclass1: asList(filters.styleclass1),
+    styleclass2: asList(filters.styleclass2),
+    subdepartments: asList(filters.subdepartments),
+    fabricclasses: asList(filters.fabricclasses),
+    colorclasses: asList(filters.colorclasses),
+  };
+  const trail = Array.isArray(value.turns) ? value.turns.slice(-20).map((turn) => ({
+    question: String(turn?.question || "").slice(0, 700),
+    resolvedQuestion: String(turn?.resolvedQuestion || "").slice(0, 1200),
+    answerSummary: String(turn?.answerSummary || "").slice(0, 1400),
+    keyPoints: asList(turn?.keyPoints, 8).map((item) => item.slice(0, 500)),
+    metrics: Array.isArray(turn?.metrics) ? turn.metrics.slice(0, 10).map((item) => ({
+      key: String(item?.key || "").slice(0, 80),
+      label: String(item?.label || "").slice(0, 120),
+      format: String(item?.format || "number").slice(0, 30),
+      value: Number(item?.value || 0),
+    })) : [],
+    scope: String(turn?.scope || "").slice(0, 500),
+    route: String(turn?.route || "").slice(0, 160),
+    domain: String(turn?.domain || "").slice(0, 80),
+    dimension: String(turn?.dimension || "").slice(0, 80),
+    filters: turn?.filters && typeof turn.filters === "object" ? {
+      fromDate: String(turn.filters.fromDate || "").slice(0, 10),
+      toDate: String(turn.filters.toDate || "").slice(0, 10),
+      branches: asList(turn.filters.branches, 15),
+      stores: asList(turn.filters.stores, 15),
+      accounts: asList(turn.filters.accounts, 15),
+      barcodes: asList(turn.filters.barcodes, 15),
+      brands: asList(turn.filters.brands, 15),
+      categories: asList(turn.filters.categories, 15),
+      suppliers: asList(turn.filters.suppliers, 15),
+      designs: asList(turn.filters.designs, 15),
+    } : {},
+  })) : [];
+  return {
+    version: 3,
+    anchorQuestion: String(value.anchorQuestion || "").slice(0, 1200),
+    resolvedQuestion: String(value.resolvedQuestion || "").slice(0, 1600),
+    domain: String(value.domain || "").slice(0, 80),
+    dimension: String(value.dimension || "").slice(0, 80),
+    route: String(value.route || "").slice(0, 160),
+    filters: safeFilters,
+    turns: trail,
+  };
 }
 
 exports.assistant = async (req, res) => {
@@ -147,6 +235,7 @@ exports.assistant = async (req, res) => {
     if (!message) return res.status(400).json({ success: false, message: "Message is required" });
 
     const history = compactAssistantHistory(req.body?.history);
+    const memory = compactAssistantMemory(req.body?.memory);
     const languageMode = String(req.body?.language || "english-roman");
     const aiUser = await resolveAiUserContext({ tenantId: req.user.tenantId, user: req.user });
 
@@ -160,6 +249,7 @@ exports.assistant = async (req, res) => {
       user: aiUser,
       message,
       history,
+      memory,
       languageMode,
     });
 

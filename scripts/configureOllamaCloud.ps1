@@ -37,18 +37,20 @@ if ([string]::IsNullOrWhiteSpace($apiKey)) {
 
 Set-EnvValue $EnvFile "OLLAMA_BASE_URL" "https://ollama.com"
 Set-EnvValue $EnvFile "OLLAMA_API_KEY" $apiKey
-Set-EnvValue $EnvFile "OLLAMA_MODEL" "deepseek-v4-pro"
-Set-EnvValue $EnvFile "OLLAMA_MODEL_CANDIDATES" "deepseek-v4-pro,deepseek-v4-pro:0813,deepseek-v4-pro:cloud,deepseek-v4-pro:0813-cloud"
+Set-EnvValue $EnvFile "OLLAMA_MODEL" "gpt-oss:20b-cloud"
+Set-EnvValue $EnvFile "OLLAMA_MODEL_CANDIDATES" "gpt-oss:20b-cloud,gpt-oss:20b,nemotron-3-nano:30b-cloud,nemotron-3-nano,qwen3.5:cloud,qwen3.5,deepseek-v4-flash:cloud,deepseek-v4-flash,deepseek-v4-pro"
+Set-EnvValue $EnvFile "OLLAMA_FALLBACK_MODELS" "gpt-oss:20b,nemotron-3-nano:30b-cloud,nemotron-3-nano,qwen3.5:cloud,qwen3.5,deepseek-v4-flash:cloud,deepseek-v4-flash,deepseek-v4-pro"
+Set-EnvValue $EnvFile "OLLAMA_MODEL_ACCESS_COOLDOWN_MS" "300000"
 Set-EnvValue $EnvFile "OLLAMA_TIMEOUT_MS" "120000"
 Set-EnvValue $EnvFile "OLLAMA_NUM_CTX" "16384"
 Set-EnvValue $EnvFile "OLLAMA_NUM_PREDICT" "4096"
-Set-EnvValue $EnvFile "OLLAMA_THINKING" "false"
+Set-EnvValue $EnvFile "OLLAMA_THINKING" "low"
 Set-EnvValue $EnvFile "OLLAMA_PLANNER_THINK_LEVEL" "medium"
 Set-EnvValue $EnvFile "OLLAMA_COMPLEX_THINK_LEVEL" "high"
 Set-EnvValue $EnvFile "OLLAMA_MAX_THINKING" "false"
 
 Write-Host "Backend .env updated." -ForegroundColor Green
-Write-Host "Testing Ollama Cloud and selecting a working DeepSeek model alias..." -ForegroundColor Cyan
+Write-Host "Testing Ollama Cloud and selecting the best model currently allowed by this account..." -ForegroundColor Cyan
 
 $headers = @{
   Authorization = "Bearer $apiKey"
@@ -56,10 +58,15 @@ $headers = @{
 }
 
 $candidates = @(
-  "deepseek-v4-pro",
-  "deepseek-v4-pro:0813",
-  "deepseek-v4-pro:cloud",
-  "deepseek-v4-pro:0813-cloud"
+  "gpt-oss:20b-cloud",
+  "gpt-oss:20b",
+  "nemotron-3-nano:30b-cloud",
+  "nemotron-3-nano",
+  "qwen3.5:cloud",
+  "qwen3.5",
+  "deepseek-v4-flash:cloud",
+  "deepseek-v4-flash",
+  "deepseek-v4-pro"
 )
 
 $workingModel = $null
@@ -87,9 +94,9 @@ foreach ($model in $candidates) {
 $apiKey = $null
 
 if (-not $workingModel) {
-  Write-Host "Cloud setup was saved, but the live test did not succeed." -ForegroundColor Yellow
+  Write-Host "Cloud setup was saved, but none of the configured models is currently accessible on this Ollama account." -ForegroundColor Yellow
   if ($lastError) { Write-Host "Last error: $lastError" -ForegroundColor Yellow }
-  Write-Host "Run: npm run test:ollama-cloud" -ForegroundColor Yellow
+  Write-Host "Either add Ollama usage/upgrade, or run: npm run test:ollama-cloud after your plan/credits change." -ForegroundColor Yellow
   exit 1
 }
 

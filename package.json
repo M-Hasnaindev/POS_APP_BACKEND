@@ -12,7 +12,13 @@
     "test": "npm run test:ai",
     "configure:ollama-cloud": "powershell -ExecutionPolicy Bypass -File scripts/configureOllamaCloud.ps1",
     "test:ollama-cloud": "node scripts/testOllamaCloud.js",
-    "test:assistant-runtime": "node scripts/testAssistantConversationLogic.js && node scripts/testOllamaThinkingAdapter.js"
+    "test:assistant-runtime": "node scripts/testQuestionBankTraining.js && node scripts/testAssistantConversationLogic.js && node scripts/testOllamaThinkingAdapter.js",
+    "test:assistant-training": "node scripts/testAssistant10000Coverage.js && node scripts/testAssistantSemanticGuard.js && node scripts/testQuestionBankTraining.js && node scripts/testCentralTenantAssistant.js && node scripts/testAssistantConversationLogic.js && node scripts/testOllamaThinkingAdapter.js && node scripts/testOllamaFallbackRouting.js",
+    "test:assistant-semantic": "node scripts/testAssistantSemanticGuard.js",
+    "test:assistant-central": "node scripts/testCentralTenantAssistant.js",
+    "test:ollama-fallback": "node scripts/testOllamaFallbackRouting.js",
+    "detect:ollama-model": "node scripts/detectOllamaModelAccess.js",
+    "use:ollama-starter": "node scripts/useOllamaStarterProfile.js"
   },
   "keywords": [],
   "author": "",

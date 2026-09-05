@@ -1,4 +1,7 @@
-const vocabulary = Object.freeze({
+const { synonymGroups } = require("./posLanguage");
+const { getQuestionBankTrainingPrompt, getQuestionBankStats } = require("./questionBankTraining");
+
+const legacyVocabulary = Object.freeze({
   sales: ["sale", "sales", "selling", "revenue", "bikri", "farokht", "sell", "sold"],
   purchase: ["purchase", "purchasing", "kharid", "khareed", "buying", "maal khareeda"],
   return: ["return", "refund", "wapsi", "wapas", "sale return", "purchase return"],
@@ -13,6 +16,8 @@ const vocabulary = Object.freeze({
   profit: ["profit", "margin", "gross profit", "kamai"],
   quantity: ["quantity", "qty", "pieces", "pcs", "units", "kitne piece"],
 });
+
+const vocabulary = Object.freeze({ ...legacyVocabulary, ...synonymGroups });
 
 const conversationRules = Object.freeze([
   "Understand Roman Urdu and informal POS language. 'bikri/farokht' means sales, 'kharid/khareed' means purchase, 'maal' usually means stock/product, and 'wapsi/wapas' means return.",
@@ -52,14 +57,19 @@ const dialogueExamples = Object.freeze([
   ["ye stock kab khatam hoga?", "If product/barcode is not clear from the current turn or conversation, ask which barcode/design first; then estimate stockout using current stock and recent signed sales demand."],
 ]);
 
-function getConversationTrainingPrompt() {
+function getConversationTrainingPrompt(question = "") {
   const vocab = Object.entries(vocabulary)
     .map(([intent, words]) => `${intent}: ${words.join(", ")}`)
     .join("\n");
-  const examples = dialogueExamples.map(([question, meaning]) => `User: ${question}\nMeaning: ${meaning}`).join("\n\n");
+  const examples = dialogueExamples.map(([sampleQuestion, meaning]) => `User: ${sampleQuestion}\nMeaning: ${meaning}`).join("\n\n");
+  const bankStats = getQuestionBankStats();
+  const relevantBank = question ? getQuestionBankTrainingPrompt(question, 8) : "10,000-question bank loaded; relevant examples are retrieved per user turn.";
   return [
     "NATURAL BUSINESS LANGUAGE GUIDE",
     vocab,
+    "",
+    `TRAINING CORPUS: ${bankStats.questionCount.toLocaleString("en-US")} unique English/Roman-English POS questions across ${Object.keys(bankStats.categories || {}).length} business categories, grounded in both uploaded training workbooks.`,
+    relevantBank,
     "",
     "CONVERSATION RULES",
     ...conversationRules.map((rule) => `- ${rule}`),

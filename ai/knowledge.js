@@ -1,3 +1,4 @@
+const { canonicalizeForRouting } = require("./posLanguage");
 const trainingKnowledge = require("./trainingKnowledge.generated.json");
 
 const allowedTables = Object.freeze([
@@ -13,9 +14,9 @@ const allowedTables = Object.freeze([
 
 const tablePurposes = Object.freeze({
   PosDetail: "closed/historical item-level sales fact; signed return rows; transaction-time cost",
-  UnPosDetail: "live/before-closing item-level sales fact; deduplicate against PosMaster",
-  PosMaster: "closed sale header; BillStatus P is paid",
-  UnPosMaster: "live sale header; BillStatus P is paid",
+  UnPosDetail: "live/before-closing item-level sales fact; mobile dashboard totals combine it with PosDetail using UNION ALL",
+  PosMaster: "closed sale header; use for document/header context when required, not as a mandatory filter for mobile dashboard-compatible sales totals",
+  UnPosMaster: "live sale header; use for document/header context when required, not as a mandatory filter for mobile dashboard-compatible sales totals",
   PosPurchaseD: "purchase item-level amount and quantity fact",
   PosPurchaseM: "purchase date, supplier and header",
   PosPReturnD: "purchase-return item-level amount and stock-out quantity fact",
@@ -101,7 +102,7 @@ function trainingContextForTables(tableNames, question = "") {
 }
 
 function selectRelevantTables(question) {
-  const text = String(question || "").toLowerCase();
+  const text = canonicalizeForRouting(question);
   const selected = new Set(["BranchFile", "StockRoom", "BarcodeView"]);
   for (const table of allowedTables) {
     if (text.includes(table.toLowerCase())) selected.add(table);
@@ -124,7 +125,12 @@ function selectRelevantTables(question) {
     ["PosBarcodeAdjM", "PosBarcodeAdjD"].forEach((x) => selected.add(x));
   }
   if (/discount policy|discount compliance/.test(text)) selected.add("PosDiscount");
-  if (/target|incentive/.test(text)) ["PosBranchIncentive", "PosSalesmanIncentive", "PosCategoryIncentive", "PosCategoryWiseSalesmanIncentive", "PosTargetMaster", "PosTargetDetail"].forEach((x) => selected.add(x));
+  if (/salesman|sales person|salesperson|employee|staff|seller/.test(text)) selected.add("Employee");
+  if (/customer|supplier|vendor|party|account|ledger|receivable|payable/.test(text)) selected.add("AccountList");
+  if (/target|incentive/.test(text)) {
+    ["PosBranchIncentive", "PosSalesmanIncentive", "PosCategoryIncentive", "PosCategoryWiseSalesmanIncentive", "PosTargetMaster", "PosTargetDetail"].forEach((x) => selected.add(x));
+    if (/salesman|employee|staff/.test(text)) selected.add("Employee");
+  }
   return [...selected].filter((table) => allowedTables.includes(table));
 }
 

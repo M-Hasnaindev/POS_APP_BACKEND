@@ -6,23 +6,24 @@ const dimensionMap = {
   day: { label: "Period", select: "CONVERT(varchar(10), s.SaleDate, 23)", join: "", fallback: "" },
   week: { label: "Week", select: "CONCAT(DATEPART(year,s.SaleDate),'-W',RIGHT('0'+CAST(DATEPART(iso_week,s.SaleDate) AS varchar(2)),2))", join: "", fallback: "" },
   month: { label: "Month", select: "CONVERT(varchar(7), s.SaleDate, 23)", join: "", fallback: "" },
-  branch: { label: "Branch", select: "COALESCE(bf.BranchName, s.Branch)", join: "LEFT JOIN BranchFile bf ON bf.CompanyCode=@companyCode AND bf.BranchCode=s.Branch", fallback: "Unassigned" },
-  store: { label: "Store", select: "COALESCE(sr.Name, s.StoreCode)", join: "LEFT JOIN StockRoom sr ON sr.Code=s.StoreCode AND sr.Branch=s.Branch", fallback: "Unassigned" },
-  barcode: { label: "Product", select: "COALESCE(NULLIF(bv.DesignDesc,''), s.BarCode)", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  design: { label: "Design", select: "COALESCE(NULLIF(bv.DesignDesc,''),NULLIF(bv.DesignNo,''),s.BarCode)", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  brand: { label: "Brand", select: "COALESCE(NULLIF(bv.BrandName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  cobrand: { label: "Co-Brand", select: "COALESCE(NULLIF(bv.CoBrandName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  category: { label: "Category", select: "COALESCE(NULLIF(bv.CatagoryName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  subcategory: { label: "Sub Category", select: "COALESCE(NULLIF(bv.SubCatagoryName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  department: { label: "Department", select: "COALESCE(NULLIF(bv.DepartmentName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  subdepartment: { label: "Sub Department", select: "COALESCE(NULLIF(bv.SubDepartmentName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  style: { label: "Style", select: "COALESCE(NULLIF(bv.StyleName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  season: { label: "Season", select: "COALESCE(NULLIF(bv.SeasonName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  fabric: { label: "Fabric", select: "COALESCE(NULLIF(bv.FabricName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  gender: { label: "Gender", select: "COALESCE(NULLIF(bv.GenderName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  size: { label: "Size", select: "COALESCE(NULLIF(bv.SizeName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  color: { label: "Color", select: "COALESCE(NULLIF(bv.ColorName,''), 'Unassigned')", join: "LEFT JOIN BarcodeView bv ON bv.BarCode=s.BarCode", fallback: "Unassigned" },
-  salesman: { label: "Salesman", select: "COALESCE(NULLIF(e.Name,''), s.SalesMan)", join: "LEFT JOIN Employee e ON e.Code=s.SalesMan", fallback: "Unassigned" },
+  invoice: { label: "Invoice", select: "ISNULL(s.TransactionNumber,'Unassigned')", join: "", fallback: "Unassigned" },
+  branch: { label: "Branch", select: "COALESCE(bf.BranchName, s.Branch)", join: "OUTER APPLY (SELECT MAX(x.BranchName) BranchName FROM BranchFile x WHERE x.CompanyCode=@companyCode AND x.BranchCode=s.Branch) bf", fallback: "Unassigned" },
+  store: { label: "Store", select: "COALESCE(sr.Name, s.StoreCode)", join: "OUTER APPLY (SELECT MAX(x.Name) Name FROM StockRoom x WHERE x.Code=s.StoreCode AND x.Branch=s.Branch) sr", fallback: "Unassigned" },
+  barcode: { label: "Product", select: "COALESCE(NULLIF(bv.DesignDesc,''), s.BarCode)", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  design: { label: "Design", select: "COALESCE(NULLIF(bv.DesignDesc,''),NULLIF(bv.DesignNo,''),s.BarCode)", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  brand: { label: "Brand", select: "COALESCE(NULLIF(bv.BrandName,''), 'Unassigned')", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  cobrand: { label: "Co-Brand", select: "COALESCE(NULLIF(bv.CoBrandName,''), 'Unassigned')", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  category: { label: "Category", select: "COALESCE(NULLIF(bv.CatagoryName,''), 'Unassigned')", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  subcategory: { label: "Sub Category", select: "COALESCE(NULLIF(bv.SubCatagoryName,''), 'Unassigned')", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  department: { label: "Department", select: "COALESCE(NULLIF(bv.DepartmentName,''), 'Unassigned')", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  subdepartment: { label: "Sub Department", select: "COALESCE(NULLIF(bv.SubDepartmentName,''), 'Unassigned')", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  style: { label: "Style", select: "COALESCE(NULLIF(bv.StyleName,''), 'Unassigned')", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  season: { label: "Season", select: "COALESCE(NULLIF(bv.SeasonName,''), 'Unassigned')", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  fabric: { label: "Fabric", select: "COALESCE(NULLIF(bv.FabricName,''), 'Unassigned')", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  gender: { label: "Gender", select: "COALESCE(NULLIF(bv.GenderName,''), 'Unassigned')", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  size: { label: "Size", select: "COALESCE(NULLIF(bv.SizeName,''), 'Unassigned')", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  color: { label: "Color", select: "COALESCE(NULLIF(bv.ColorName,''), 'Unassigned')", join: "OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CoBrandName) CoBrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.SubCatagoryName) SubCatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SubDepartmentName) SubDepartmentName,MAX(x.StyleName) StyleName,MAX(x.SeasonName) SeasonName,MAX(x.FabricName) FabricName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName FROM BarcodeView x WHERE x.BarCode=s.BarCode) bv", fallback: "Unassigned" },
+  salesman: { label: "Salesman", select: "COALESCE(NULLIF(e.Name,''), s.SalesMan)", join: "OUTER APPLY (SELECT MAX(x.Name) Name FROM Employee x WHERE x.Code=s.SalesMan) e", fallback: "Unassigned" },
 };
 
 function businessDate() {
@@ -152,21 +153,34 @@ async function runSalesSummary(pool, user, filters) {
   const result = await request.query(`${cte}, Daily AS (
       SELECT CONVERT(varchar(10),SaleDate,23) Label,SUM(GrossSales) GrossSales,SUM(NetSales) Amount,
         SUM(Qty) Quantity,SUM(DiscountAmount) DiscountAmount,SUM(GST) GST,
-        SUM(NetSales-CostValue) GrossProfit,COUNT(DISTINCT BillKey) BillCount
+        SUM(NetSales-CostValue) GrossProfit,COUNT(DISTINCT BillKey) BillCount,
+        SUM(CASE WHEN ISNULL(Qty,0)>=0 AND ISNULL(NetSales,0)>=0 THEN ISNULL(NetSales,0) ELSE 0 END) SaleAmount,
+        SUM(CASE WHEN ISNULL(Qty,0)<0 OR ISNULL(NetSales,0)<0 THEN ABS(ISNULL(NetSales,0)) ELSE 0 END) ReturnAmount,
+        SUM(CASE WHEN ISNULL(Qty,0)>=0 THEN ISNULL(Qty,0) ELSE 0 END) SaleQuantity,
+        SUM(CASE WHEN ISNULL(Qty,0)<0 THEN ABS(ISNULL(Qty,0)) ELSE 0 END) ReturnQuantity
       FROM Sales GROUP BY CONVERT(varchar(10),SaleDate,23)
-    ) SELECT Label,Amount,Quantity,
+    ) SELECT Label,Amount,Quantity,SaleAmount,ReturnAmount,SaleQuantity,ReturnQuantity,
       SUM(GrossSales) OVER() TotalGrossSales,SUM(Amount) OVER() NetSales,SUM(Quantity) OVER() NetQty,
+      SUM(SaleAmount) OVER() TotalSaleAmount,SUM(ReturnAmount) OVER() TotalReturnAmount,
+      SUM(SaleQuantity) OVER() TotalSaleQuantity,SUM(ReturnQuantity) OVER() TotalReturnQuantity,
       SUM(DiscountAmount) OVER() TotalDiscount,SUM(GST) OVER() TotalGST,SUM(GrossProfit) OVER() TotalGrossProfit,
       CASE WHEN SUM(Amount) OVER()=0 THEN 0 ELSE SUM(GrossProfit) OVER()*100.0/SUM(Amount) OVER() END MarginPercent,
       SUM(BillCount) OVER() TotalBillCount
     FROM Daily ORDER BY Label;`);
   const rows = result.recordset || [];
   const first = rows[0] || {};
-  const summary = { NetSales:first.NetSales,NetQty:first.NetQty,GrossProfit:first.TotalGrossProfit,
-    MarginPercent:first.MarginPercent,DiscountAmount:first.TotalDiscount,BillCount:first.TotalBillCount };
+  const summary = {
+    SaleAmount:first.TotalSaleAmount,ReturnAmount:first.TotalReturnAmount,NetSales:first.NetSales,
+    SaleQuantity:first.TotalSaleQuantity,ReturnQuantity:first.TotalReturnQuantity,NetQty:first.NetQty,
+    GrossProfit:first.TotalGrossProfit,MarginPercent:first.MarginPercent,DiscountAmount:first.TotalDiscount,BillCount:first.TotalBillCount,
+  };
   return {
     title: "Sales Summary",
-    kpis: toKpis(summary, [["NetSales","Net Sales","currency"],["NetQty","Net Quantity"],["GrossProfit","Gross Profit","currency"],["MarginPercent","Margin %","percent"],["DiscountAmount","Discount","currency"],["BillCount","Bills"]]),
+    kpis: toKpis(summary, [
+      ["SaleAmount","Sale Amount","currency"],["ReturnAmount","Return Amount","currency"],["NetSales","Net Sales","currency"],
+      ["SaleQuantity","Sale Quantity"],["ReturnQuantity","Return Quantity"],["NetQty","Net Quantity"],
+      ["GrossProfit","Gross Profit","currency"],["MarginPercent","Margin %","percent"],["DiscountAmount","Discount","currency"],["BillCount","Bills"],
+    ]),
     charts: [{ type: "line", title: "Daily Sales & Quantity", data: rows }],
     rows,
   };
@@ -190,6 +204,37 @@ async function runSalesDimension(pool, user, filters, dimension) {
     kpis: toKpis({NetSales:rows[0]?.OverallAmount,NetQty:rows[0]?.OverallQuantity}, [["NetSales","Net Sales","currency"],["NetQty","Net Quantity"]]),
     charts: [{ type: dimension === "day" ? "line" : "bar", title: `${dim.label} Performance`, data: rows.slice(0, 20) }],
     rows,
+  };
+}
+
+async function runSalesReturns(pool, user, filters, dimension = null) {
+  const request = createRequest(pool, user, filters);
+  const cte = salesCte(request, filters);
+  const dim = dimension && dimensionMap[dimension] ? dimensionMap[dimension] : null;
+  const labelExpression = dim ? dim.select : "CONVERT(varchar(10),s.SaleDate,23)";
+  const join = dim ? dim.join : "";
+  const result = await request.query(`${cte}
+    SELECT TOP 100 ${labelExpression} Label,
+      SUM(CASE WHEN ISNULL(s.Qty,0)<0 OR ISNULL(s.NetSales,0)<0 THEN ABS(ISNULL(s.NetSales,0)) ELSE 0 END) ReturnAmount,
+      SUM(CASE WHEN ISNULL(s.Qty,0)<0 OR ISNULL(s.NetSales,0)<0 THEN ABS(ISNULL(s.Qty,0)) ELSE 0 END) ReturnQuantity,
+      COUNT(DISTINCT CASE WHEN ISNULL(s.Qty,0)<0 OR ISNULL(s.NetSales,0)<0 THEN s.BillKey END) ReturnBills,
+      SUM(SUM(CASE WHEN ISNULL(s.Qty,0)<0 OR ISNULL(s.NetSales,0)<0 THEN ABS(ISNULL(s.NetSales,0)) ELSE 0 END)) OVER() OverallReturnAmount,
+      SUM(SUM(CASE WHEN ISNULL(s.Qty,0)<0 OR ISNULL(s.NetSales,0)<0 THEN ABS(ISNULL(s.Qty,0)) ELSE 0 END)) OVER() OverallReturnQuantity
+    FROM Sales s ${join}
+    WHERE ISNULL(s.Qty,0)<0 OR ISNULL(s.NetSales,0)<0
+    GROUP BY ${labelExpression}
+    ORDER BY ReturnAmount DESC;`);
+  const rows = result.recordset || [];
+  return {
+    title: dim ? `${dim.label} Wise Sales Returns` : "Sales Return Summary",
+    kpis: [
+      { key:"ReturnAmount", label:"Return Amount", format:"currency", value:Number(rows[0]?.OverallReturnAmount||0) },
+      { key:"ReturnQuantity", label:"Return Quantity", format:"number", value:Number(rows[0]?.OverallReturnQuantity||0) },
+      { key:"ReturnBills", label:"Return Bills", format:"number", value:rows.reduce((sum,row)=>sum+Number(row.ReturnBills||0),0) },
+    ],
+    charts: [{ type: dim ? "bar" : "line", title: dim ? `${dim.label} Returns` : "Sales Returns", data: rows.slice(0,20).map(row=>({ Label:row.Label, Amount:Number(row.ReturnAmount||0), Quantity:Number(row.ReturnQuantity||0) })) }],
+    rows,
+    note: "Sales returns are calculated only from signed live sales detail rows whose quantity or dashboard-compatible net amount is negative; values are displayed as absolute return amounts/quantities.",
   };
 }
 
@@ -224,15 +269,16 @@ async function runPurchase(pool, user, filters, { isReturn = false, dimension = 
   }
   const query = dimensionSql
     ? `${cte} SELECT TOP 100 ${dimensionSql.label} Label,SUM(p.Amount) Amount,SUM(p.Quantity) Quantity,
-         SUM(SUM(p.Amount)) OVER() OverallAmount,SUM(SUM(p.Quantity)) OVER() OverallQuantity
+         SUM(SUM(p.Amount)) OVER() OverallAmount,SUM(SUM(p.Quantity)) OVER() OverallQuantity,
+         (SELECT COUNT(DISTINCT BarCode) FROM Purchase) ProductCount
        FROM ${dimensionSql.from} GROUP BY ${dimensionSql.label} ORDER BY Amount DESC;`
     : `${cte}, Daily AS (SELECT CONVERT(varchar(10),TransactionDate,23) Label,SUM(Amount) Amount,SUM(Quantity) Quantity FROM Purchase GROUP BY CONVERT(varchar(10),TransactionDate,23))
-       SELECT TOP 40 Label,Amount,Quantity,SUM(Amount) OVER() TotalAmount,SUM(Quantity) OVER() TotalQuantity FROM Daily ORDER BY Label;`;
+       SELECT TOP 40 Label,Amount,Quantity,SUM(Amount) OVER() TotalAmount,SUM(Quantity) OVER() TotalQuantity,(SELECT COUNT(DISTINCT BarCode) FROM Purchase) ProductCount FROM Daily ORDER BY Label;`;
   const result = await request.query(query);
   const rows = result.recordset || [];
   const summary = dimensionSql
-    ? { Amount:rows[0]?.OverallAmount, Quantity:rows[0]?.OverallQuantity }
-    : { Amount: rows[0]?.TotalAmount, Quantity: rows[0]?.TotalQuantity };
+    ? { Amount:rows[0]?.OverallAmount, Quantity:rows[0]?.OverallQuantity, ProductCount:rows[0]?.ProductCount }
+    : { Amount: rows[0]?.TotalAmount, Quantity: rows[0]?.TotalQuantity, ProductCount:rows[0]?.ProductCount };
   const prefix = isReturn ? "Purchase Return" : "Purchase";
   return {
     title: dimension ? `${dimension[0].toUpperCase()+dimension.slice(1)} Wise ${prefix}` : `${prefix} Summary`,
@@ -256,8 +302,19 @@ async function runPayment(pool, user, filters) {
       
   ) SELECT CASE Paymethod WHEN '1' THEN 'Cash' WHEN '2' THEN 'Card' WHEN '3' THEN 'Credit' ELSE 'Other' END Label,SUM(Amount) Amount FROM Payments GROUP BY Paymethod ORDER BY Amount DESC;`);
   const rows = result.recordset || [];
+  const byLabel = Object.fromEntries(rows.map((row) => [String(row.Label || "Other"), Number(row.Amount || 0)]));
   const total = rows.reduce((sum, row) => sum + Number(row.Amount || 0), 0);
-  return { title: "Payment Mix", kpis: [{ key:"Total",label:"Total Paid",format:"currency",value:total }], charts:[{type:"pie",title:"Cash / Card / Credit",data:rows}], rows };
+  return {
+    title: "Payment Mix",
+    kpis: [
+      { key:"Cash", label:"Cash", format:"currency", value:Number(byLabel.Cash || 0) },
+      { key:"Card", label:"Card", format:"currency", value:Number(byLabel.Card || 0) },
+      { key:"Credit", label:"Credit", format:"currency", value:Number(byLabel.Credit || 0) },
+      { key:"Other", label:"Other", format:"currency", value:Number(byLabel.Other || 0) },
+      { key:"Total", label:"Total Paid", format:"currency", value:total },
+    ],
+    charts:[{type:"pie",title:"Cash / Card / Credit",data:rows}], rows
+  };
 }
 
 async function runTransfer(pool, user, filters) {
@@ -270,7 +327,8 @@ async function runTransfer(pool, user, filters) {
     SUM(ISNULL(d.Quantity,0)) SentQuantity,SUM(CASE WHEN d.RecStatus='Y' THEN ISNULL(d.RecQuantity,0) ELSE 0 END) ReceivedQuantity,
     SUM(ISNULL(d.Quantity,0)-CASE WHEN d.RecStatus='Y' THEN ISNULL(d.RecQuantity,0) ELSE 0 END) PendingQuantity
     FROM PosTransferD d INNER JOIN PosTransferM m ON m.CompanyCode=d.CompanyCode AND m.TransactionNumber=d.TransactionNumber AND m.Branch=d.Branch
-    LEFT JOIN BranchFile b1 ON b1.CompanyCode=@companyCode AND b1.BranchCode=d.Branch LEFT JOIN BranchFile b2 ON b2.CompanyCode=@companyCode AND b2.BranchCode=d.Branchto
+    OUTER APPLY (SELECT MAX(x.BranchName) BranchName FROM BranchFile x WHERE x.CompanyCode=@companyCode AND x.BranchCode=d.Branch) b1
+    OUTER APPLY (SELECT MAX(x.BranchName) BranchName FROM BranchFile x WHERE x.CompanyCode=@companyCode AND x.BranchCode=d.Branchto) b2
     WHERE d.CompanyCode=@companyCode AND ISNULL(d.Cancel,'N')<>'Y' AND ISNULL(m.Cancel,'N')<>'Y'
       AND m.TransactionDate>=@fromDate AND m.TransactionDate<DATEADD(day,1,@toDate) ${extra}
     GROUP BY COALESCE(b1.BranchName,d.Branch)+' to '+COALESCE(b2.BranchName,d.Branchto) ORDER BY SentQuantity DESC;`);
@@ -310,12 +368,17 @@ async function runStock(pool,user,filters,dimension=null){
   ), Filtered AS (SELECT x.* FROM Movements x ${extra})
   ${stockDimension?`SELECT TOP 100 ${dimensionLabel} Label,MIN(f.BarCode) BarCode,SUM(f.Qty) Quantity,`:`SELECT TOP 100 COALESCE(NULLIF(bv.DesignDesc,''),f.BarCode) Label,f.BarCode,COALESCE(bf.BranchName,f.Branch) BranchName,COALESCE(sr.Name,f.StoreCode) StoreName,SUM(f.Qty) Quantity,`}
     SUM(f.Qty*ISNULL(bv.CostPrice,0)) CostValue,SUM(f.Qty*ISNULL(bv.PurchasePrice,0)) PurchaseValue,SUM(f.Qty*ISNULL(bv.RetailPrice,0)) RetailValue,SUM(f.Qty*ISNULL(bv.DiscountPrice,0)) DiscountValue,
-    SUM(SUM(f.Qty)) OVER() OverallQuantity,SUM(SUM(f.Qty*ISNULL(bv.CostPrice,0))) OVER() OverallCostValue,SUM(SUM(f.Qty*ISNULL(bv.RetailPrice,0))) OVER() OverallRetailValue
-    FROM Filtered f LEFT JOIN BarcodeView bv ON bv.BarCode=f.BarCode LEFT JOIN BranchFile bf ON bf.CompanyCode=@companyCode AND bf.BranchCode=f.Branch LEFT JOIN StockRoom sr ON sr.Code=f.StoreCode AND sr.Branch=f.Branch
+    SUM(SUM(f.Qty)) OVER() OverallQuantity,SUM(SUM(f.Qty*ISNULL(bv.CostPrice,0))) OVER() OverallCostValue,
+    SUM(SUM(f.Qty*ISNULL(bv.PurchasePrice,0))) OVER() OverallPurchaseValue,SUM(SUM(f.Qty*ISNULL(bv.RetailPrice,0))) OVER() OverallRetailValue,
+    SUM(SUM(f.Qty*ISNULL(bv.DiscountPrice,0))) OVER() OverallDiscountValue
+    FROM Filtered f
+    OUTER APPLY (SELECT MAX(x.DesignDesc) DesignDesc,MAX(x.DesignNo) DesignNo,MAX(x.BrandName) BrandName,MAX(x.CatagoryName) CatagoryName,MAX(x.DepartmentName) DepartmentName,MAX(x.SeasonName) SeasonName,MAX(x.GenderName) GenderName,MAX(x.SizeName) SizeName,MAX(x.ColorName) ColorName,MAX(x.CostPrice) CostPrice,MAX(x.PurchasePrice) PurchasePrice,MAX(x.RetailPrice) RetailPrice,MAX(x.DiscountPrice) DiscountPrice FROM BarcodeView x WHERE x.BarCode=f.BarCode) bv
+    OUTER APPLY (SELECT MAX(x.BranchName) BranchName FROM BranchFile x WHERE x.CompanyCode=@companyCode AND x.BranchCode=f.Branch) bf
+    OUTER APPLY (SELECT MAX(x.Name) Name FROM StockRoom x WHERE x.Code=f.StoreCode AND x.Branch=f.Branch) sr
     GROUP BY ${stockDimension?dimensionLabel:"COALESCE(NULLIF(bv.DesignDesc,''),f.BarCode),f.BarCode,COALESCE(bf.BranchName,f.Branch),COALESCE(sr.Name,f.StoreCode)"}
     HAVING SUM(f.Qty)<>0 ORDER BY ABS(SUM(f.Qty)) DESC;`);
   const rows=result.recordset||[]; const total=Number(rows[0]?.OverallQuantity||0);
-  return {title:"Current Stock",kpis:[{key:"Quantity",label:"Current Stock",format:"number",value:total},{key:"CostValue",label:"Stock Value at Cost",format:"currency",value:Number(rows[0]?.OverallCostValue||0)},{key:"RetailValue",label:"Potential Retail Value",format:"currency",value:Number(rows[0]?.OverallRetailValue||0)}],charts:[{type:"bar",title:"Stock by Product / Location",data:rows.slice(0,20)}],rows,note:"Overall stock and valuation use the full selected scope; only the leading 100 rows are displayed."};
+  return {title:"Current Stock",kpis:[{key:"Quantity",label:"Current Stock",format:"number",value:total},{key:"CostValue",label:"Stock Value at Cost",format:"currency",value:Number(rows[0]?.OverallCostValue||0)},{key:"PurchaseValue",label:"Stock Value at Purchase Price",format:"currency",value:Number(rows[0]?.OverallPurchaseValue||0)},{key:"RetailValue",label:"Potential Retail Value",format:"currency",value:Number(rows[0]?.OverallRetailValue||0)},{key:"DiscountValue",label:"Stock Value at Discount Price",format:"currency",value:Number(rows[0]?.OverallDiscountValue||0)}],charts:[{type:"bar",title:"Stock by Product / Location",data:rows.slice(0,20)}],rows,note:"Overall stock and valuation use the full selected scope; only the leading 100 rows are displayed."};
 }
 
 async function runDiscount(pool,user,filters){
@@ -335,7 +398,7 @@ async function runFbr(pool,user,filters){
 
 async function runProductMaster(pool,user,filters){
   const request=createRequest(pool,user,filters);const clauses=[];addListFilter(request,clauses,"bv.BarCode","masterBarcode",filters.barcodes);addProductFilters(request,clauses,"bv",filters,"masterProduct");const where=clauses.length?`WHERE ${clauses.join(" AND ")}`:"";
-  const result=await request.query(`SELECT TOP 200 bv.BarCode,bv.DesignNo,bv.DesignDesc,bv.BrandName,bv.CatagoryName,bv.SubCatagoryName,bv.StyleName,bv.SeasonName,bv.ColorName,bv.SizeName,bv.FabricName,bv.DepartmentName,bv.GenderName,bv.CoBrandName,bv.PurchasePrice,bv.RetailPrice,bv.DiscountPrice,COUNT(*) OVER() TotalProducts FROM BarcodeView bv ${where} ORDER BY bv.DesignDesc,bv.BarCode`);
+  const result=await request.query(`WITH ProductMaster AS (SELECT bv.BarCode,MAX(bv.DesignNo) DesignNo,MAX(bv.DesignDesc) DesignDesc,MAX(bv.BrandName) BrandName,MAX(bv.CatagoryName) CatagoryName,MAX(bv.SubCatagoryName) SubCatagoryName,MAX(bv.StyleName) StyleName,MAX(bv.SeasonName) SeasonName,MAX(bv.ColorName) ColorName,MAX(bv.SizeName) SizeName,MAX(bv.FabricName) FabricName,MAX(bv.DepartmentName) DepartmentName,MAX(bv.GenderName) GenderName,MAX(bv.CoBrandName) CoBrandName,MAX(bv.PurchasePrice) PurchasePrice,MAX(bv.RetailPrice) RetailPrice,MAX(bv.DiscountPrice) DiscountPrice FROM BarcodeView bv ${where} GROUP BY bv.BarCode) SELECT TOP 200 p.*,COUNT(*) OVER() TotalProducts FROM ProductMaster p ORDER BY p.DesignDesc,p.BarCode`);
   const rows=result.recordset||[];const brandCounts=new Map();for(const row of rows)brandCounts.set(row.BrandName||"Unassigned",(brandCounts.get(row.BrandName||"Unassigned")||0)+1);
   const chartRows=[...brandCounts].map(([Label,Quantity])=>({Label,Quantity})).sort((a,b)=>b.Quantity-a.Quantity).slice(0,20);
   return {title:"Product Master",kpis:[{key:"Products",label:"Matching Products",format:"number",value:Number(rows[0]?.TotalProducts||0)}],charts:[{type:"bar",title:"Products by Brand (displayed rows)",data:chartRows}],rows,note:"Product master reports use the live BarcodeView. Transaction-only branch, account and store filters do not redefine product master records."};
@@ -469,4 +532,4 @@ async function runReport({tenantId,user,code,filters:input}){
   return {...output,title:report.name,code:report.code,category:report.category,uiVariant:report.uiVariant,family:report.family,mode:report.mode,descriptionLines:report.descriptionLines,filters,source:"live-database",generatedAt:new Date().toISOString(),note:output.note||(report.mode==="predictive"?"Predictive insight is based only on the selected live historical scope; unavailable facts are never fabricated.":undefined)};
 }
 
-module.exports={listReports,listFilterOptions,runReport,normalizeFilters,runSalesSummary,runSalesDimension,runPurchase,runPayment,runTransfer,runStock};
+module.exports={listReports,listFilterOptions,runReport,normalizeFilters,runSalesSummary,runSalesDimension,runSalesReturns,runPurchase,runPayment,runTransfer,runStock,runSimpleInventory};
