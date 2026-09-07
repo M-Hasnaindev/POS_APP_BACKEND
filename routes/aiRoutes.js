@@ -6,6 +6,8 @@ const router = express.Router();
 router.use(verifyToken);
 router.get("/health", controller.health);
 router.get("/catalog", controller.catalog);
+router.get("/resources", controller.resourceManifest);
+router.get("/resources/:table", controller.resourcePage);
 router.get("/reports", controller.listReports);
 router.get("/filters", controller.filterOptions);
 router.post("/reports/:code/run", controller.runReport);

@@ -13,6 +13,10 @@ const {
 const { resolveAiUserContext } = require("../services/aiUserScopeService");
 const { getQuestionBankStats } = require("../ai/questionBankTraining");
 const { getIntentIndexStats } = require("../ai/trainingSemanticRouter");
+const {
+  listAiResources,
+  readAiResourcePage,
+} = require("../services/aiResourceService");
 
 exports.health = async (req, res) => {
   const [ollama, catalog] = await Promise.all([
@@ -58,6 +62,38 @@ exports.catalog = async (req, res) => {
   } catch (error) {
     console.error("AI DATABASE CATALOG ERROR:", error.message);
     return res.status(500).json({ success: false, message: "Unable to read live database catalog" });
+  }
+};
+
+exports.resourceManifest = async (req, res) => {
+  try {
+    const force = /^(1|true|yes)$/i.test(String(req.query.refresh || ""));
+    const manifest = await listAiResources(req.user.tenantId, force);
+    return res.json({ success: true, tenantId: req.user.tenantId, ...manifest });
+  } catch (error) {
+    console.error("AI RESOURCE MANIFEST ERROR:", error.message);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Unable to prepare AI resources",
+    });
+  }
+};
+
+exports.resourcePage = async (req, res) => {
+  try {
+    const result = await readAiResourcePage({
+      tenantId: req.user.tenantId,
+      tableName: req.params.table,
+      page: req.query.page,
+      pageSize: req.query.pageSize,
+    });
+    return res.json({ success: true, tenantId: req.user.tenantId, ...result });
+  } catch (error) {
+    console.error("AI RESOURCE PAGE ERROR:", error.message);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Unable to download AI resource",
+    });
   }
 };
 
