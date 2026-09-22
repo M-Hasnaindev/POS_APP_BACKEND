@@ -4,6 +4,10 @@ const controller = require("../controllers/aiController");
 
 const router = express.Router();
 router.use(verifyToken);
+const local = require('../controllers/localAiController');
+router.get('/local/reports', local.reports);
+router.post('/local/plan', local.plan);
+router.post('/local/explain', local.explain);
 router.get("/health", controller.health);
 router.get("/catalog", controller.catalog);
 router.get("/resources", controller.resourceManifest);

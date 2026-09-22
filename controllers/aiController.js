@@ -269,6 +269,9 @@ exports.assistant = async (req, res) => {
   try {
     const message = String(req.body?.message || "").trim();
     if (!message) return res.status(400).json({ success: false, message: "Message is required" });
+    if (require('../services/localAiService').accountingRequest(message)) {
+      return res.json({ success: true, result: { mode: 'disabled', answer: 'CBook/BBook accounting analysis filhal disable hai. POS sales, purchases aur inventory analysis available hain.', visualization: null } });
+    }
 
     const history = compactAssistantHistory(req.body?.history);
     const memory = compactAssistantMemory(req.body?.memory);
