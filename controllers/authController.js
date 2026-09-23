@@ -5,6 +5,7 @@ const {
   getTenantById,
   getPublicTenant,
 } = require("../config/tenants");
+const { getBranchPriceAccess } = require("../services/branchPriceAccessService");
 
 function signTenantToken(tenantId) {
   return jwt.sign(
@@ -185,6 +186,39 @@ exports.getUserDetail = async (req, res) => {
   } catch (err) {
     console.error("GET USER ERROR:", err.message);
     return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+// ============================================
+// GET LOGGED-IN USER BRANCH / PRICE ACCESS
+// ============================================
+exports.getBranchPriceAccess = async (req, res) => {
+  try {
+    const requestedUserId = String(req.query.userId || req.user.userId || "").trim();
+    const tokenUserId = String(req.user.userId || "").trim();
+
+    // The frontend sends UserID explicitly as requested, but it must always
+    // match the authenticated JWT user.
+    if (requestedUserId !== tokenUserId) {
+      return res.status(403).json({
+        success: false,
+        message: "You cannot read branch pricing access for another user",
+      });
+    }
+
+    const access = await getBranchPriceAccess({
+      tenantId: req.user.tenantId,
+      userId: tokenUserId,
+      companyCode: req.user.companyCode,
+    });
+
+    return res.json({ success: true, data: access });
+  } catch (err) {
+    console.error("BRANCH PRICE ACCESS ERROR:", err.message);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to load branch pricing access",
+    });
   }
 };
 

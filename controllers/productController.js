@@ -1,4 +1,8 @@
 const { sql, getPoolForTenant } = require("../config/db");
+const {
+  getBranchPriceAccess,
+  applyPriceAccessToProduct,
+} = require("../services/branchPriceAccessService");
 const COMPANY_TIME_ZONE = "Asia/Karachi";
 const EMPTY_STOCK_FILTERS = [
   "Brand",
@@ -120,6 +124,12 @@ exports.searchProduct = async (req, res) => {
     console.log("Like pattern:", likeValue);
 
     const poolConnection = await getPoolForTenant(req.user.tenantId);
+    const priceAccess = await getBranchPriceAccess({
+      tenantId: req.user.tenantId,
+      userId: req.user.userId,
+      companyCode: req.user.companyCode,
+      pool: poolConnection,
+    });
 
     const result = await poolConnection
       .request()
@@ -143,7 +153,10 @@ exports.searchProduct = async (req, res) => {
 
     return res.json({
       success: true,
-      products: result.recordset || [],
+      products: (result.recordset || []).map((product) =>
+        applyPriceAccessToProduct(product, priceAccess),
+      ),
+      priceAccess,
     });
 
   } catch (err) {
@@ -179,6 +192,12 @@ exports.searchStock = async (req, res) => {
 
     const normalizedValue = normalize(rawValue);
     const poolConnection = await getPoolForTenant(req.user.tenantId);
+    const priceAccess = await getBranchPriceAccess({
+      tenantId: req.user.tenantId,
+      userId: req.user.userId,
+      companyCode: req.user.companyCode,
+      pool: poolConnection,
+    });
 
     const productResult = await poolConnection
       .request()
@@ -215,6 +234,7 @@ exports.searchStock = async (req, res) => {
           productCount: 0,
           procedureRowCount: 0,
         },
+        priceAccess,
       });
     }
 
@@ -268,10 +288,15 @@ exports.searchStock = async (req, res) => {
       return stockMap;
     }, {});
 
-    const productsWithStock = products.map((product) => ({
-      ...product,
-      stock: stockByBarcode[String(product.BarCode || "").trim()] || 0,
-    }));
+    const productsWithStock = products.map((product) =>
+      applyPriceAccessToProduct(
+        {
+          ...product,
+          stock: stockByBarcode[String(product.BarCode || "").trim()] || 0,
+        },
+        priceAccess,
+      ),
+    );
     const totalBalQty = productsWithStock.reduce(
       (total, product) => total + Number(product.stock || 0),
       0,
@@ -290,6 +315,7 @@ exports.searchStock = async (req, res) => {
         productCount: productsWithStock.length,
         procedureRowCount: records.length,
       },
+      priceAccess,
     });
   } catch (err) {
     console.error("Stock search error:", err);
@@ -316,6 +342,12 @@ exports.getProductByBarcode = async (req, res) => {
 
     const normalizedValue = normalize(barcode);
     const poolConnection = await getPoolForTenant(req.user.tenantId);
+    const priceAccess = await getBranchPriceAccess({
+      tenantId: req.user.tenantId,
+      userId: req.user.userId,
+      companyCode: req.user.companyCode,
+      pool: poolConnection,
+    });
 
     const result = await poolConnection
       .request()
@@ -328,7 +360,10 @@ exports.getProductByBarcode = async (req, res) => {
 
     return res.json({
       success: true,
-      product: result.recordset[0] || null,
+      product: result.recordset[0]
+        ? applyPriceAccessToProduct(result.recordset[0], priceAccess)
+        : null,
+      priceAccess,
     });
 
   } catch (err) {
