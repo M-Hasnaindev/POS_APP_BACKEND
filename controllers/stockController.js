@@ -10,6 +10,8 @@ exports.getSnapshot = async (req, res) => {
     const snapshot = await getStockSnapshot({
       tenantId: req.user.tenantId,
       companyCode: req.user.companyCode,
+      requestedCompanyCode: req.headers["x-company-code"],
+      userId: req.user.userId,
       fromDate,
       toDate,
     });

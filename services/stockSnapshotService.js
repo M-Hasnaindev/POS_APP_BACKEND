@@ -26,7 +26,34 @@ function hasBusinessData(row) {
   });
 }
 
-async function getStockSnapshot({ tenantId, companyCode, fromDate, toDate }) {
+async function resolveCompanyCode(pool, { companyCode, requestedCompanyCode, userId }) {
+  const tokenCompany = String(companyCode || "").trim();
+  if (tokenCompany) return tokenCompany;
+
+  const requested = String(requestedCompanyCode || "").trim();
+  const request = pool.request().input("userId", sql.VarChar, String(userId || "").trim());
+  let query = `SELECT DISTINCT LTRIM(RTRIM(CompanyCode)) AS CompanyCode
+    FROM dbo.Security
+    WHERE LTRIM(RTRIM(UserID)) = LTRIM(RTRIM(@userId))
+      AND NULLIF(LTRIM(RTRIM(CompanyCode)), '') IS NOT NULL`;
+  if (requested) {
+    request.input("requestedCompanyCode", sql.VarChar(20), requested);
+    query += " AND LTRIM(RTRIM(CompanyCode)) = @requestedCompanyCode";
+  }
+  const result = await request.query(query);
+  const companies = (result.recordset || []).map((row) => String(row.CompanyCode || "").trim()).filter(Boolean);
+  if (companies.length === 1) return companies[0];
+
+  const error = new Error(
+    companies.length > 1
+      ? "Company selection is required. Please sign in again."
+      : "Authenticated company could not be verified. Please sign in again.",
+  );
+  error.code = "COMPANY_CODE_REQUIRED";
+  throw error;
+}
+
+async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, userId, fromDate, toDate }) {
   const from = parseDateOnly(fromDate);
   const to = parseDateOnly(toDate);
   if (!from || !to || from > to) {
@@ -34,18 +61,17 @@ async function getStockSnapshot({ tenantId, companyCode, fromDate, toDate }) {
     error.code = "INVALID_DATE_RANGE";
     throw error;
   }
-  if (!String(companyCode || "").trim()) {
-    const error = new Error("Authenticated company code is missing.");
-    error.code = "COMPANY_CODE_REQUIRED";
-    throw error;
-  }
-
   const startedAt = Date.now();
   const pool = await getPoolForTenant(tenantId);
+  const effectiveCompanyCode = await resolveCompanyCode(pool, {
+    companyCode,
+    requestedCompanyCode,
+    userId,
+  });
   const request = pool.request();
   request.timeout = 300000;
   request
-    .input("CompanyCode", sql.VarChar(6), String(companyCode).trim())
+    .input("CompanyCode", sql.VarChar(6), effectiveCompanyCode)
     .input("Branch", sql.NVarChar(sql.MAX), "")
     .input("Store", sql.NVarChar(sql.MAX), "")
     .input("Startdate", sql.DateTime, from)
@@ -74,7 +100,7 @@ async function getStockSnapshot({ tenantId, companyCode, fromDate, toDate }) {
   const rows = rawRows.filter(hasBusinessData);
   console.log("[StockSnapshot] Completed", {
     tenantId,
-    companyCode,
+    companyCode: effectiveCompanyCode,
     fromDate,
     toDate,
     procedureRows: rawRows.length,
@@ -84,4 +110,4 @@ async function getStockSnapshot({ tenantId, companyCode, fromDate, toDate }) {
   return { rows, procedureRows: rawRows.length, durationMs: Date.now() - startedAt };
 }
 
-module.exports = { getStockSnapshot, parseDateOnly, hasBusinessData };
+module.exports = { getStockSnapshot, parseDateOnly, hasBusinessData, resolveCompanyCode };
