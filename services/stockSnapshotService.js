@@ -44,8 +44,27 @@ async function resolveCompanyCode(pool, { companyCode, requestedCompanyCode, use
   const companies = (result.recordset || []).map((row) => String(row.CompanyCode || "").trim()).filter(Boolean);
   if (companies.length === 1) return companies[0];
 
+  // Older persisted sessions can contain a valid tenant/user token but no
+  // company claim (and some admin Security rows do not carry CompanyCode).
+  // Resolve against the already-authenticated tenant database. A requested
+  // value is accepted only when it actually exists in BranchFile; without a
+  // requested value we proceed only when that tenant database has one company.
+  const branchRequest = pool.request();
+  let branchQuery = `SELECT DISTINCT LTRIM(RTRIM(CompanyCode)) AS CompanyCode
+    FROM dbo.BranchFile
+    WHERE NULLIF(LTRIM(RTRIM(CompanyCode)), '') IS NOT NULL`;
+  if (requested) {
+    branchRequest.input("requestedCompanyCode", sql.VarChar(20), requested);
+    branchQuery += " AND LTRIM(RTRIM(CompanyCode)) = @requestedCompanyCode";
+  }
+  const branchResult = await branchRequest.query(branchQuery);
+  const tenantCompanies = (branchResult.recordset || [])
+    .map((row) => String(row.CompanyCode || "").trim())
+    .filter(Boolean);
+  if (tenantCompanies.length === 1) return tenantCompanies[0];
+
   const error = new Error(
-    companies.length > 1
+    companies.length > 1 || tenantCompanies.length > 1
       ? "Company selection is required. Please sign in again."
       : "Authenticated company could not be verified. Please sign in again.",
   );
