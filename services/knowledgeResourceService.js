@@ -5,6 +5,20 @@ const PACK_VERSION = "2026-09-26-v2";
 const DEFAULT_PAGE_SIZE = 750;
 const MAX_PAGE_SIZE = 1500;
 
+function positiveEnvSeconds(name, fallback) {
+  const parsed = Number.parseInt(process.env[name], 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function resourceRefreshPolicy() {
+  return {
+    preferredStrategy: "change_tracking",
+    incrementalSeconds: positiveEnvSeconds("RESOURCE_INCREMENTAL_INTERVAL_SECONDS", 600),
+    verifiedSnapshotSeconds: positiveEnvSeconds("RESOURCE_SNAPSHOT_INTERVAL_SECONDS", 86400),
+    atomicPromotion: true,
+  };
+}
+
 const APPROVED_TABLES = Object.freeze([
   "BranchFile", "StockRoom", "BarcodeView", "PosPurchaseM", "PosPurchaseD",
   "PosPReturnM", "PosPReturnD", "PosTransferM", "PosTransferD",
@@ -168,6 +182,7 @@ async function getManifest({ tenantId, companyCode, allowedBranches = [], isAdmi
     changeTrackingVersion,
     schemaHash: catalog.schemaHash,
     companyCode: String(companyCode || "").trim(),
+    refreshPolicy: resourceRefreshPolicy(),
     requiredCount: APPROVED_TABLES.length,
     resources: catalog.resources.map((item) => ({ ...item, syncStrategy: item.changeTrackingEnabled && item.columns.some((column) => column.isPrimaryKey) ? "change_tracking" : "verified_snapshot" })),
     unavailable: catalog.resources.filter((item) => item.objectType === "UNAVAILABLE").map((item) => item.name),
@@ -247,4 +262,4 @@ async function getResourcePage({ tenantId, companyCode, allowedBranches = [], is
   };
 }
 
-module.exports = { APPROVED_TABLES, PACK_VERSION, getManifest, getResourceChanges, getResourcePage };
+module.exports = { APPROVED_TABLES, PACK_VERSION, getManifest, getResourceChanges, getResourcePage, resourceRefreshPolicy };
