@@ -17,8 +17,9 @@ app.get("/", (_req, res) => {
       notifications: "/api/notifications",
       products: "/api/products",
       stock: "/api/stock",
+      resources: "/api/resources",
+      intelligence: "/api/intelligence",
       versionUpdates: "/api/versionupdates",
-      ai: "/api/ai",
       health: "/api/health",
     },
   });
@@ -37,8 +38,9 @@ const salesRoutes = require("./routes/salesRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const productRoutes = require("./routes/productRoutes");
 const versionUpdateRoutes = require("./routes/versionUpdateRoutes");
-const aiRoutes = require("./routes/aiRoutes");
 const stockRoutes = require("./routes/stockRoutes");
+const knowledgeRoutes = require("./routes/knowledgeRoutes");
+const intelligenceRoutes = require("./routes/intelligenceRoutes");
 
 
 app.use("/api/auth", authRoutes);
@@ -46,7 +48,8 @@ app.use("/api/sales", salesRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/versionupdates", versionUpdateRoutes);
-app.use("/api/ai", aiRoutes);
 app.use("/api/stock", stockRoutes);
+app.use("/api/resources", knowledgeRoutes);
+app.use("/api/intelligence", intelligenceRoutes);
 
 module.exports = app;

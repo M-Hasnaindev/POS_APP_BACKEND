@@ -49,10 +49,12 @@ function buildTenant(index) {
   };
 }
 
-const tenants = [buildTenant(1), buildTenant(2)].filter(Boolean);
+// Empty numbered slots are ignored, so new companies can be registered
+// through environment configuration without changing this loader again.
+const tenants = Array.from({ length: 50 }, (_, index) => buildTenant(index + 1)).filter(Boolean);
 
 if (tenants.length === 0) {
-  throw new Error("No tenant databases configured. Configure DB_1_DATABASE/DB_1_KEY (and DB_2_* if needed).");
+  throw new Error("No tenant databases configured. Configure DB_1_DATABASE/DB_1_KEY (and further DB_n_* tenants as needed).");
 }
 
 const duplicateKey = tenants.find((tenant, index) =>

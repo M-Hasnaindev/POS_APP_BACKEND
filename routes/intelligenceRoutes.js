@@ -1,0 +1,11 @@
+const express = require("express");
+const { verifyToken } = require("../middleware/authMiddleware");
+const controller = require("../controllers/intelligenceController");
+const router = express.Router();
+router.use(verifyToken);
+router.post("/plan", controller.plan);
+router.post("/explain", controller.explain);
+router.post("/repair", controller.repair);
+router.get("/reports", controller.catalog);
+router.post("/reports/plan", controller.reportPlan);
+module.exports = router;
