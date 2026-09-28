@@ -11,7 +11,9 @@ function ollamaConfig() {
     baseUrl: String(process.env.OLLAMA_BASE_URL || "https://ollama.com").replace(/\/$/, ""),
     apiKey: String(process.env.OLLAMA_API_KEY || process.env.OLLAMA_AUTH_TOKEN || "").trim(),
     models: [...new Set([primaryModel, ...fallbackModels])],
-    timeout: Math.max(10000, Math.min(Number(process.env.OLLAMA_TIMEOUT_MS || 60000), 120000)),
+    // Keep the complete fallback window below typical serverless request limits.
+    // The client can retry the whole idempotent planning request safely.
+    timeout: Math.max(10000, Math.min(Number(process.env.OLLAMA_TIMEOUT_MS || 22000), 30000)),
   };
 }
 
@@ -31,7 +33,7 @@ async function chat(messages, { json = false, temperature = 0.1 } = {}) {
     throw error;
   }
   let lastError;
-  const attempts = config.models.slice(0, 3);
+  const attempts = config.models.slice(0, 2);
   for (let index = 0; index < attempts.length; index += 1) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), config.timeout);
@@ -69,12 +71,12 @@ function safeSchema(value) {
 
 function validateSql(sql, schema) {
   const value = String(sql || "").trim().replace(/;+\s*$/, "").replace(/\b([A-Za-z_][\w]*\.)?([A-Za-z_][\w]*Date)\s+BETWEEN/gi, (_match, alias, column) => `date(${alias || ""}${column}) BETWEEN`);
-  if (!/^(select|with)\b/i.test(value) || value.includes(";") || forbiddenSql.test(value)) throw new Error("Assistant produced an unsafe query");
+  if (!/^(select|with)\b/i.test(value) || value.includes(";") || forbiddenSql.test(value) || /--|\/\*|\*\//.test(value)) throw new Error("Assistant produced an unsafe query");
   const available = new Set(schema.map((table) => table.name.toLowerCase()));
   for (const match of value.matchAll(/(?:\bwith|,)\s*([a-zA-Z0-9_]+)\s+as\s*\(/gi)) available.add(match[1].toLowerCase());
   const referenced = [...value.matchAll(/\b(?:from|join)\s+["`\[]?([a-zA-Z0-9_]+)/gi)].map((match) => match[1].toLowerCase());
-  if (!referenced.length || referenced.some((name) => !available.has(name))) throw new Error("Assistant query references an unavailable table");
-  return value;
+  if (!referenced.length || referenced.some((name) => !available.has(name) || name.startsWith("sqlite_") || name.startsWith("_resource"))) throw new Error("Assistant query references an unavailable table");
+  return value.replace(/\blimit\s+(\d+)/ig, (_match, count) => `LIMIT ${Math.min(Number(count) || 500, 500)}`);
 }
 
 function exactColumn(schema,name,column){const table=schema.find(item=>item.name.toLowerCase()===name.toLowerCase());return table?.columns.find(item=>item.toLowerCase()===column.toLowerCase())||null}
@@ -135,14 +137,24 @@ async function repairPlan({ question, failedSql, failure, history, schema, langu
 
 function normalizeFilters(filters) {
   const value = filters && typeof filters === "object" ? filters : {};
+  const cleanValue = (input, limit = 120) => String(input || "").replace(/[;'"`\\]/g, "").replace(/--|\/\*|\*\//g, "").trim().slice(0, limit);
   return {
-    fromDate: String(value.fromDate || "").slice(0, 10),
-    toDate: String(value.toDate || "").slice(0, 10),
-    branches: Array.isArray(value.branches) ? value.branches.map(String).slice(0, 100) : [],
-    accounts: Array.isArray(value.accounts) ? value.accounts.map(String).slice(0, 100) : [],
-    stores: Array.isArray(value.stores) ? value.stores.map(String).slice(0, 100) : [],
-    products: value.products && typeof value.products === "object" ? value.products : {},
+    fromDate: cleanValue(value.fromDate, 10),
+    toDate: cleanValue(value.toDate, 10),
+    branches: Array.isArray(value.branches) ? value.branches.map((item) => cleanValue(item)).filter(Boolean).slice(0, 100) : [],
+    accounts: Array.isArray(value.accounts) ? value.accounts.map((item) => cleanValue(item)).filter(Boolean).slice(0, 100) : [],
+    stores: Array.isArray(value.stores) ? value.stores.map((item) => cleanValue(item)).filter(Boolean).slice(0, 100) : [],
+    products: value.products && typeof value.products === "object" ? Object.fromEntries(Object.entries(value.products).slice(0, 30).map(([key, item]) => [cleanValue(key, 50), cleanValue(item)]).filter(([key, item]) => key && item)) : {},
   };
+}
+
+function missingReportFilters(plan, filters) {
+  const required = [filters.fromDate, filters.toDate, ...filters.branches, ...filters.accounts, ...filters.stores, ...Object.values(filters.products || {})]
+    .map((value) => String(value || "").trim()).filter(Boolean);
+  return (plan?.queries || []).map((query) => {
+    const sql = String(query.sql || "").toLowerCase();
+    return { queryId: query.id, values: [...new Set(required)].filter((value) => !sql.includes(value.toLowerCase())) };
+  }).filter((item) => item.values.length);
 }
 
 async function createReportPlan({ code, filters, schema, language, permissions }) {
@@ -150,8 +162,15 @@ async function createReportPlan({ code, filters, schema, language, permissions }
   const cleanSchema = safeSchema(schema);
   if (!cleanSchema.length) throw Object.assign(new Error("Business resources are not ready"), { status: 409 });
   const cleanFilters = normalizeFilters(filters);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanFilters.fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(cleanFilters.toDate) || cleanFilters.fromDate > cleanFilters.toDate) throw Object.assign(new Error("A valid report date range is required"), { status: 400 });
   const question = `Generate report ${report.id}: ${report.name}. Category: ${report.category}. Family: ${report.family}. Metrics: ${report.metrics.join(", ")}. Dimension: ${report.dimension || "overall"}. Analysis contract: ${report.analysisContract}. Advice intent: ${report.advice}. Apply exactly these filters: ${JSON.stringify(cleanFilters)}. Return both amount and quantity where relevant. Use readable names. For any sales fact, Pos and UnPos paid detail must both be included and de-duplicated by Branch + TransactionNumber. Use date(detailDate) for the complete inclusive filter range. Overall totals must cover the full filtered scope; LIMIT applies only to ranked detail.`;
-  const plan = await createPlan({ question, history: [], schema: cleanSchema, language, permissions });
+  let plan = await createPlan({ question, history: [], schema: cleanSchema, language, permissions });
+  let missing = missingReportFilters(plan, cleanFilters);
+  if (missing.length) {
+    plan = await createPlan({ question: `${question}\nMANDATORY FILTER VALIDATION FAILED. Rebuild every query and explicitly apply these missing filter values using exact available columns: ${JSON.stringify(missing)}. Do not omit a selected filter.`, history: [], schema: cleanSchema, language, permissions });
+    missing = missingReportFilters(plan, cleanFilters);
+  }
+  if (missing.length) throw Object.assign(new Error(`Report query could not safely apply selected filters: ${JSON.stringify(missing)}`), { status: 422 });
   return { report, filters: cleanFilters, plan };
 }
 
