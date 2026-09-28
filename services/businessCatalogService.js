@@ -35,6 +35,7 @@ const RELATIONSHIPS = Object.freeze([
 ]);
 
 function listReports() {
+  const catalog = require('./existingAnalytics').reports;
   const groups = new Map();
   for (const report of catalog) {
     const list = groups.get(report.category) || [];
@@ -48,7 +49,7 @@ function listReports() {
 }
 
 function getReport(code) {
-  const report = byCode.get(String(code || "").trim().toLowerCase());
+  const report = require('./existingAnalytics').reports.find(item=>item.code.toLowerCase()===String(code).toLowerCase()) || byCode.get(String(code || "").trim().toLowerCase());
   if (!report) throw Object.assign(new Error("Report definition was not found"), { status: 404 });
   return report;
 }
