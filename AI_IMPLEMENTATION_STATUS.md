@@ -28,6 +28,8 @@ The remaining 409 catalog entries still use the existing AI-planned local-query 
 
 ## Tests
 
+- Assistant language adapter: 264 sales/purchase phrasing variants plus follow-up period/grouping, domain-switch, ambiguous `kal`, invalid-date, and unknown named-filter cases. This is deterministic intent coverage, not model fine-tuning or proof of arbitrary natural-language accuracy.
+
 - `npm run test:ai`: deterministic numeric SQLite fixtures and live-route safety checks. No POS data is written.
 - `node scripts/testLiveSalesCompiler.js --all`: SQL Server syntax and empty-period result reconciliation. This is **not** a financial reconciliation against real business totals.
 - Frontend `npm run test:ai`: local/live fallback, reconciliation, 10,000-row SQLite inserts/deltas/rollback, resume/consent/authentication, native plugin generation, voice lifecycle mocks, export content escaping/assumption retention.
