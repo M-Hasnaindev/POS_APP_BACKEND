@@ -2,8 +2,8 @@ const crypto = require("crypto");
 const { sql, getPoolForTenant } = require("../config/db");
 
 const PACK_VERSION = "2026-09-26-v2";
-const DEFAULT_PAGE_SIZE = 750;
-const MAX_PAGE_SIZE = 1500;
+const DEFAULT_PAGE_SIZE = 10000;
+const MAX_PAGE_SIZE = 10000;
 
 function positiveEnvSeconds(name, fallback) {
   const parsed = Number.parseInt(process.env[name], 10);
@@ -32,6 +32,7 @@ const APPROVED_TABLES = Object.freeze([
 
 const PRIORITY = new Map(APPROVED_TABLES.map((name, index) => [name.toLowerCase(), index]));
 const catalogCache = new Map();
+const fingerprintCache = new Map();
 
 function identifier(value) {
   return `[${String(value).replaceAll("]", "]]" )}]`;
@@ -166,7 +167,32 @@ function orderColumns(table) {
   const primary = table.columns.filter((column) => column.isPrimaryKey);
   if (primary.length) return primary;
   const excluded = new Set(["text", "ntext", "image", "xml", "geography", "geometry", "hierarchyid"]);
-  return table.columns.filter((column) => !excluded.has(String(column.dataType).toLowerCase())).slice(0, 4);
+  // Four non-unique fields can reorder tied rows between OFFSET pages and
+  // silently skip/duplicate transactions. Include every sortable field.
+  const preferred=['companycode','branch','counterno','transactionnumber','tranno','barcode','storecode','code'];
+  return table.columns.filter((column) => !excluded.has(String(column.dataType).toLowerCase())).sort((a,b)=>{
+    const left=preferred.indexOf(a.name.toLowerCase()),right=preferred.indexOf(b.name.toLowerCase());
+    return (left<0?999:left)-(right<0?999:right)||a.ordinal-b.ordinal;
+  });
+}
+
+async function scopedFingerprint({ tenantId, companyCode, allowedBranches = [], isAdmin = false, table, catalog, force = false }) {
+  if (!table || table.objectType === "UNAVAILABLE") return "unavailable";
+  const branchFile = catalog.resources.find((item) => item.name.toLowerCase() === "branchfile");
+  const scope = scopeFor(table, branchFile, companyCode, allowedBranches, isAdmin);
+  const scopeKey = crypto.createHash("sha256").update(JSON.stringify({ tenantId, companyCode, allowedBranches: [...allowedBranches].sort(), isAdmin, table: table.name })).digest("hex").slice(0, 24);
+  const cached = fingerprintCache.get(scopeKey);
+  if (!force && cached && Date.now() - cached.createdAt < 60 * 1000) return cached.value;
+  const pool = await getPoolForTenant(tenantId);
+  const request = pool.request();
+  if (scope.bind) request.input("companyCode", sql.NVarChar(30), String(companyCode).trim());
+  scope.branches.forEach((value,index)=>request.input(`branch${index}`,sql.NVarChar(30),value));
+  request.timeout = Math.max(30000, Math.min(Number(process.env.RESOURCE_SQL_TIMEOUT_MS || 120000), 240000));
+  const result = await request.query(`SELECT COUNT_BIG(*) AS [RowCount],COALESCE(CHECKSUM_AGG(BINARY_CHECKSUM(*)),0) AS DataChecksum FROM ${identifier(table.schema)}.${identifier(table.name)} AS src ${scope.clause}`);
+  const row = result.recordset?.[0] || {};
+  const value = crypto.createHash("sha256").update(`${table.schema}|${table.name}|${String(row.RowCount || 0)}|${String(row.DataChecksum || 0)}`).digest("hex").slice(0, 32);
+  fingerprintCache.set(scopeKey, { createdAt: Date.now(), value });
+  return value;
 }
 
 async function getManifest({ tenantId, companyCode, allowedBranches = [], isAdmin = false, force = false }) {
@@ -183,20 +209,28 @@ async function getManifest({ tenantId, companyCode, allowedBranches = [], isAdmi
     schemaHash: catalog.schemaHash,
     companyCode: String(companyCode || "").trim(),
     refreshPolicy: resourceRefreshPolicy(),
+    durableDelta: require('./resourceDeltaStore').enabled(),
     requiredCount: APPROVED_TABLES.length,
     resources: catalog.resources.map((item) => ({ ...item, syncStrategy: item.changeTrackingEnabled && item.columns.some((column) => column.isPrimaryKey) ? "change_tracking" : "verified_snapshot" })),
     unavailable: catalog.resources.filter((item) => item.objectType === "UNAVAILABLE").map((item) => item.name),
   };
 }
 
-async function getResourceChanges({ tenantId, companyCode, allowedBranches = [], isAdmin = false, tableName, watermark }) {
+async function getResourceChanges({ tenantId, companyCode, allowedBranches = [], isAdmin = false, tableName, watermark, fingerprint }) {
   const canonical = canonicalTableName(tableName);
   const catalog = await readCatalog(tenantId, false);
   const table = catalog.resources.find((item) => item.name.toLowerCase() === canonical.toLowerCase());
   const primary = (table?.columns || []).filter((column) => column.isPrimaryKey);
-  if (!isAdmin && allowedBranches.length) return { strategy:"verified_snapshot",resetRequired:false,watermark:null,upserts:[],deletedIds:[],reason:"Restricted branch scopes use atomic verified snapshots so deleted rows cannot cross permission boundaries" };
-  if (!table || table.objectType !== "TABLE" || !table.changeTrackingEnabled || !primary.length) {
-    return { strategy: "verified_snapshot", resetRequired: false, watermark: null, upserts: [], deletedIds: [], reason: "SQL Server Change Tracking is not enabled for this resource" };
+  if (!table || table.objectType === "UNAVAILABLE") return { strategy:"verified_snapshot",resetRequired:false,snapshotChanged:false,fingerprint:"unavailable",watermark:null,upserts:[],deletedIds:[] };
+  if ((!isAdmin && allowedBranches.length) || table.objectType !== "TABLE" || !table.changeTrackingEnabled || !primary.length) {
+    const currentFingerprint = await scopedFingerprint({ tenantId, companyCode, allowedBranches, isAdmin, table, catalog, force: true });
+    const previousFingerprint = String(fingerprint || "").trim();
+    return {
+      strategy: "verified_snapshot", resetRequired: false,
+      snapshotChanged: !previousFingerprint || previousFingerprint !== currentFingerprint,
+      fingerprint: currentFingerprint, watermark: null, upserts: [], deletedIds: [],
+      reason: !isAdmin && allowedBranches.length ? "Restricted scope verified by atomic table fingerprint" : "Legacy table verified by atomic table fingerprint",
+    };
   }
   const previous = Math.max(0, Number.parseInt(watermark, 10) || 0);
   const pool = await getPoolForTenant(tenantId);
@@ -221,17 +255,18 @@ async function getResourceChanges({ tenantId, companyCode, allowedBranches = [],
   return { strategy: "change_tracking", resetRequired: false, watermark: current, upserts, deletedIds, checksum: crypto.createHash("sha256").update(JSON.stringify({ upserts, deletedIds })).digest("hex") };
 }
 
-async function getResourcePage({ tenantId, companyCode, allowedBranches = [], isAdmin = false, tableName, page, pageSize }) {
+async function getResourcePage({ tenantId, companyCode, allowedBranches = [], isAdmin = false, tableName, page, pageSize, rowOffset }) {
   const canonical = canonicalTableName(tableName);
   const catalog = await readCatalog(tenantId, false);
   const table = catalog.resources.find((item) => item.name.toLowerCase() === canonical.toLowerCase());
   if (!table || table.objectType === "UNAVAILABLE" || !table.columns.length) {
-    return { version: `${PACK_VERSION}-${catalog.schemaHash}`, table, page: 1, pageSize: 0, totalRows: 0, hasMore: false, rows: [], checksum: crypto.createHash("sha256").update("[]").digest("hex") };
+    return { version: `${PACK_VERSION}-${catalog.schemaHash}`, table, page: 1, pageSize: 0, totalRows: 0, hasMore: false, rows: [], checksum: crypto.createHash("sha256").update("[]").digest("hex"), fingerprint: "unavailable" };
   }
 
   const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
   const safePageSize = Math.max(100, Math.min(Number.parseInt(pageSize, 10) || DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE));
-  const offset = (safePage - 1) * safePageSize;
+  const offset = rowOffset == null ? (safePage - 1) * safePageSize : Number(rowOffset);
+  if (!Number.isSafeInteger(offset) || offset < 0) throw Object.assign(new Error("Invalid resource offset"), { status: 400 });
   const order = orderColumns(table);
   const orderBy = order.length ? order.map((column) => identifier(column.name)).join(",") : "(SELECT NULL)";
   const fields = table.columns.map((column) => identifier(column.name)).join(",");
@@ -254,12 +289,30 @@ async function getResourcePage({ tenantId, companyCode, allowedBranches = [], is
   const received = result.recordset || [];
   const hasMore = received.length > safePageSize;
   const rows = hasMore ? received.slice(0, safePageSize) : received;
+  const fingerprint = hasMore ? null : await scopedFingerprint({ tenantId, companyCode, allowedBranches, isAdmin, table, catalog, force: true });
   return {
     version: `${PACK_VERSION}-${catalog.schemaHash}`, table, page: safePage,
     pageSize: safePageSize, hasMore, rows, rowCount: rows.length,
     totalRows: hasMore ? null : offset + rows.length,
-    checksum: crypto.createHash("sha256").update(JSON.stringify(rows)).digest("hex"),
+    checksum: crypto.createHash("sha256").update(JSON.stringify(rows)).digest("hex"), fingerprint,
   };
 }
 
-module.exports = { APPROVED_TABLES, PACK_VERSION, getManifest, getResourceChanges, getResourcePage, resourceRefreshPolicy };
+async function deltaContext(args) {
+  const catalog=await readCatalog(args.tenantId,false);
+  const canonical=canonicalTableName(args.tableName);
+  const table=catalog.resources.find(item=>item.name.toLowerCase()===canonical.toLowerCase());
+  if(!table || table.objectType==='UNAVAILABLE')throw Object.assign(new Error('Resource table unavailable'),{status:404});
+  return {...args,table,schemaHash:catalog.schemaHash,allowedBranches:args.allowedBranches||[],catalog};
+}
+async function buildDeltaSnapshot(args) {
+  const context=await deltaContext(args);
+  return require('./resourceDeltaStore').step(context,
+    offset=>getResourcePage({...args,page:1,pageSize:10000,rowOffset:offset}),
+    ()=>scopedFingerprint({...context,force:true}));
+}
+async function readDeltaSnapshot(args) {
+  const context=await deltaContext(args);
+  return require('./resourceDeltaStore').changes(context,args.version,args.previous,args.cursor);
+}
+module.exports = { APPROVED_TABLES, PACK_VERSION, getManifest, getResourceChanges, getResourcePage, resourceRefreshPolicy, buildDeltaSnapshot, readDeltaSnapshot };

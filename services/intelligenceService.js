@@ -98,13 +98,25 @@ async function createPlan({ question, history, schema, language, permissions }) 
   const cleanSchema = safeSchema(schema);
   if (!cleanSchema.length) throw Object.assign(new Error("Business resources are not ready"), { status: 409 });
   const recentHistory = Array.isArray(history) ? history.slice(-10).map((item) => ({ role: item?.role === "assistant" ? "assistant" : "user", content: String(item?.content || "").slice(0, 800) })) : [];
-  const fastPlan=fastSalesPlan(cleanQuestion,cleanSchema);if(fastPlan)return fastPlan;
+  const simpleQuestion=cleanQuestion.toLowerCase().replace(/\b(bhai|please|mujhe)\b/g,'').replace(/[?.!]/g,'').replace(/\s+/g,' ').trim();
+  if(/^(aaj|aj|today)( ki|'s)? (total )?sales( (batao|bata do|kitni hai|kitni hain))?$/.test(simpleQuestion)){
+    const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Karachi',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+    try{
+      const plan=require('./salesSemanticCompiler').compileSalesReport(getReport('RPT_02_001_SALES_SUMMARY'),cleanSchema,{fromDate:today,toDate:today,branches:[],stores:[],accounts:[],products:{}},permissions);
+      return {...plan,title:`Sales for ${today}`,detailLevel:'short',queries:plan.queries.filter(query=>query.id==='totals'),visualization:{type:'none'}};
+    }catch{/* Use the schema-aware planner when this company lacks required columns. */}
+  }
+  // The shortcut only supports an unfiltered total. Complex questions and
+  // follow-ups must retain their entities and conversation context.
+  // The legacy shortcut joins only TransactionNumber and can multiply rows
+  // across branches. Use the scoped planner until the full key is compiled.
   const system = `You are Cherry POS Query Planner. Convert the user's business question into safe SQLite SELECT queries over a downloaded read-only POS snapshot.
 Rules:
 - Use only tables and exact columns supplied in SCHEMA. Never invent a column.
 - Apply this authoritative business rule catalog: ${JSON.stringify(BUSINESS_RULES)}
 - Apply these metric definitions: ${JSON.stringify(METRICS)}
 - Apply these documented relationships: ${JSON.stringify(RELATIONSHIPS)}
+- Document joins must also match Branch and CompanyCode whenever both tables expose them. TransactionNumber alone may repeat across branches. Count bills using the complete document key.
 - Exclude cancelled rows only when a supplied status/cancel column makes that possible.
 - Sales returns can be negative. Current stock = opening + purchases - purchase returns - sales + sales returns - transfer out + transfer received +/- adjustments.
 - Every paid sales total MUST combine PosDetail/PosMaster with UnPosDetail/UnPosMaster using UNION ALL, and exclude an UnPos document when the same Branch + TransactionNumber already exists in PosMaster.
@@ -157,20 +169,25 @@ function missingReportFilters(plan, filters) {
   }).filter((item) => item.values.length);
 }
 
-async function createReportPlan({ code, filters, schema, language, permissions }) {
+async function createReportPlan({ code, filters, schema, language, permissions, failure }) {
   const report = getReport(code);
   const cleanSchema = safeSchema(schema);
   if (!cleanSchema.length) throw Object.assign(new Error("Business resources are not ready"), { status: 409 });
   const cleanFilters = normalizeFilters(filters);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanFilters.fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(cleanFilters.toDate) || cleanFilters.fromDate > cleanFilters.toDate) throw Object.assign(new Error("A valid report date range is required"), { status: 400 });
+  const compiled=require('./salesSemanticCompiler').compileSalesReport(report,cleanSchema,cleanFilters,permissions);
+  if(compiled)return {report,filters:cleanFilters,plan:compiled};
   const question = `Generate report ${report.id}: ${report.name}. Category: ${report.category}. Family: ${report.family}. Metrics: ${report.metrics.join(", ")}. Dimension: ${report.dimension || "overall"}. Analysis contract: ${report.analysisContract}. Advice intent: ${report.advice}. Apply exactly these filters: ${JSON.stringify(cleanFilters)}. Return both amount and quantity where relevant. Use readable names. For any sales fact, Pos and UnPos paid detail must both be included and de-duplicated by Branch + TransactionNumber. Use date(detailDate) for the complete inclusive filter range. Overall totals must cover the full filtered scope; LIMIT applies only to ranked detail.`;
-  let plan = await createPlan({ question, history: [], schema: cleanSchema, language, permissions });
+  const repairContext = `\nMANDATORY RECONCILIATION CONTRACT: Return exactly three queries with ids totals, detail, check. totals produces exactly one row of full-scope numeric metrics. detail supplies the named grouping/ranking. check independently sums the untruncated grouped facts and produces exactly one row with the SAME numeric column aliases as totals. Do not SUM percentages; recompute ratios from their full numerator and denominator. COALESCE empty aggregates to zero. All three queries must apply the filters. Use detail for visualization. If required source fields are missing, request clarification rather than inventing data.${failure ? ` Previous execution failed: ${String(failure).slice(0,1000)}. Correct the query using the exact schema.` : ""}`;
+  let plan = await createPlan({ question: question + repairContext, history: [], schema: cleanSchema, language, permissions });
   let missing = missingReportFilters(plan, cleanFilters);
   if (missing.length) {
-    plan = await createPlan({ question: `${question}\nMANDATORY FILTER VALIDATION FAILED. Rebuild every query and explicitly apply these missing filter values using exact available columns: ${JSON.stringify(missing)}. Do not omit a selected filter.`, history: [], schema: cleanSchema, language, permissions });
+    plan = await createPlan({ question: `${question}${repairContext}\nMANDATORY FILTER VALIDATION FAILED. Rebuild every query and explicitly apply these missing filter values using exact available columns: ${JSON.stringify(missing)}. Do not omit a selected filter.`, history: [], schema: cleanSchema, language, permissions });
     missing = missingReportFilters(plan, cleanFilters);
   }
   if (missing.length) throw Object.assign(new Error(`Report query could not safely apply selected filters: ${JSON.stringify(missing)}`), { status: 422 });
+  if(plan.needsClarification)throw Object.assign(new Error(plan.clarification||'Report requires additional source data'),{status:422});
+  if(!['totals','detail','check'].every(id=>plan.queries.some(query=>query.id===id)))throw Object.assign(new Error('Report plan lacks independent totals reconciliation'),{status:422});
   return { report, filters: cleanFilters, plan };
 }
 
@@ -179,6 +196,8 @@ async function explain({ question, plan, evidence, language }) {
   const system = `You are Cherry POS Business Assistant. Answer only from EVIDENCE produced by verified read-only queries. Never invent a number, percentage, trend, cause or forecast. If evidence is insufficient, say exactly what is missing. Match detailLevel. Even a short answer must be a polished natural sentence, format monetary amounts clearly as Rs, and mention the requested period. Use clear Roman Urdu/English matching the user. Include one useful observation or next action only when supported. Suggest up to 3 natural follow-up questions that can be answered from the same POS database. Do not output markdown tables. Return JSON only: {"answer":"...","highlights":["..."],"actions":["..."],"suggestions":["..."],"confidence":"high|medium|low"}.`;
   const content = await chat([{ role: "system", content: system }, { role: "user", content: `Language: ${String(language || "Roman Urdu")}\nQuestion: ${String(question || "").slice(0, 2000)}\nPlan: ${JSON.stringify({ title: plan?.title, detailLevel: plan?.detailLevel })}\nEVIDENCE: ${JSON.stringify(safeEvidence)}` }], { json: true, temperature: 0.2 });
   const result = extractJson(content);
+  const grounded=require('./evidenceGrounding').groundExplanation(result,safeEvidence,question);
+  Object.assign(result,grounded);
   return { answer: String(result.answer || "Evidence se jawab prepare nahi ho saka."), highlights: Array.isArray(result.highlights) ? result.highlights.map(String).slice(0, 6) : [], actions: Array.isArray(result.actions) ? result.actions.map(String).slice(0, 5) : [], suggestions: Array.isArray(result.suggestions) ? result.suggestions.map(String).slice(0, 3) : [], confidence: ["high","medium","low"].includes(result.confidence) ? result.confidence : "medium" };
 }
 
