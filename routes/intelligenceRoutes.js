@@ -8,4 +8,5 @@ router.post("/explain", controller.explain);
 router.post("/repair", controller.repair);
 router.get("/reports", controller.catalog);
 router.post("/reports/plan", controller.reportPlan);
+router.post("/reports/live", controller.liveReport);
 module.exports = router;

@@ -103,7 +103,7 @@ async function createPlan({ question, history, schema, language, permissions }) 
     const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Karachi',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
     try{
       const plan=require('./salesSemanticCompiler').compileSalesReport(getReport('RPT_02_001_SALES_SUMMARY'),cleanSchema,{fromDate:today,toDate:today,branches:[],stores:[],accounts:[],products:{}},permissions);
-      return {...plan,title:`Sales for ${today}`,detailLevel:'short',queries:plan.queries.filter(query=>query.id==='totals'),visualization:{type:'none'}};
+      return {...plan,title:`Sales for ${today}`,detailLevel:'short',queries:plan.queries.filter(query=>query.id==='totals'),visualization:{type:'none'},liveRequest:{code:'RPT_02_001_SALES_SUMMARY',filters:{fromDate:today,toDate:today,branches:[],stores:[],accounts:[],products:{}}}};
     }catch{/* Use the schema-aware planner when this company lacks required columns. */}
   }
   // The shortcut only supports an unfiltered total. Complex questions and

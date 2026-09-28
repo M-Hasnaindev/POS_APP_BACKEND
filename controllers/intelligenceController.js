@@ -30,3 +30,8 @@ exports.reportPlan = async (req, res) => {
   try { return res.json({ success: true, ...(await service.createReportPlan(await bodyWithPermissions(req))) }); }
   catch (error) { console.error("REPORT PLAN ERROR:", error.message); return res.status(error.status || 500).json({ success: false, message: error.message || "Unable to generate this report" }); }
 };
+
+exports.liveReport = async (req,res) => {
+  try { return res.json({success:true,...await require('../services/liveIntelligenceService').runLiveReport(req.user,req.body)}); }
+  catch(error){console.error('LIVE REPORT ERROR:',error.message);return res.status(error.status||500).json({success:false,message:error.status?error.message:'Live report could not be verified. Retry or sync resources.'});}
+};

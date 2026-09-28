@@ -22,8 +22,8 @@ const METRICS = Object.freeze({
 });
 
 const RELATIONSHIPS = Object.freeze([
-  "PosDetail.TransactionNumber = PosMaster.TransactionNumber",
-  "UnPosDetail.TransactionNumber = UnPosMaster.TransactionNumber",
+  "Sales detail/header document key: CompanyCode + Branch + CounterNo + TransactionNumber, never TransactionNumber alone. Use EXISTS for header status/filter checks to prevent duplicate headers multiplying detail amounts.",
+  "Closed/unclosed deduplication uses the same complete sales document key (CompanyCode, Branch, CounterNo, TransactionNumber).",
   "PosPurchaseD.TransactionNumber = PosPurchaseM.TransactionNumber",
   "PosPReturnD.TransactionNumber = PosPReturnM.TransactionNumber",
   "PosTransferD.TransactionNumber = PosTransferM.TransactionNumber",
