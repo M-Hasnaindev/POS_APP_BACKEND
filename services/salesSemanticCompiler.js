@@ -19,7 +19,7 @@ function compileSalesReport(report,schema,filters,permissions={},options={}){
   const field=(table,alias,name)=>{const found=col(table,name);if(!found)throw new Error(`${table}.${name} is required for verified sales`);return `${alias}.${quote(found)}`;};
   const keys=['CompanyCode','Branch','CounterNo','TransactionNumber'];
   const match=(detail,da,master,ma)=>keys.map(key=>`${field(detail,da,key)}=${field(master,ma,key)}`).join(' AND ');
-  const productColumns={brand:'Brand',category:'Catagory',season:'Season',style:'Style',color:'Color',size:'Size',design:'DesignNo',barcode:'BarCode',fabric:'Fabric',department:'Department',gender:'Gender',cobrand:'CoBrand',subcategory:'SubCatagory',substyle:'SubStyle',styleclass:'StyleClass',styleclass1:'SubStyle1Class',styleclass2:'SubStyle2Class',subdepartment:'SubDepartment',fabricclass:'FabricClass',colorclass:'ColorClass'};
+  const productColumns={brand:'Brand',category:'Catagory',season:'Season',style:'Style',color:'Color',size:'Size',design:'DesignNo',barcode:'BarCode',fabric:'Fabric',department:'Department',gender:'Gender',cobrand:'CoBrand',supplier:'CoBrandClass',subcategory:'SubCatagory',substyle:'SubStyle',styleclass:'StyleClass',styleclass1:'SubStyle1Class',styleclass2:'SubStyle2Class',subdepartment:'SubDepartment',fabricclass:'FabricClass',colorclass:'ColorClass'};
   const productMatch = (detail) => `${field('BarcodeView','p','BarCode')}=${field(detail,'d','BarCode')}${col('BarcodeView','CompanyCode')?` AND ${field('BarcodeView','p','CompanyCode')}=${field(detail,'d','CompanyCode')}`:''}`;
   const productValue = (detail, column) => `(SELECT MAX(${field('BarcodeView','p',column)}) FROM ${ref('BarcodeView')} p WHERE ${productMatch(detail)})`;
   function grouping(detail) {
@@ -37,7 +37,8 @@ function compileSalesReport(report,schema,filters,permissions={},options={}){
       case 'branch':return [tuple([d('CompanyCode'),d('Branch')]),nameLookup('BranchFile','BranchCode','BranchName',d('Branch'),col('BranchFile','CompanyCode')?` AND ${field('BranchFile','r','CompanyCode')}=${d('CompanyCode')}`:'')];
       case 'store':return [tuple([d('CompanyCode'),d('Branch'),d('StoreCode')]),nameLookup('StockRoom','Code','Name',d('StoreCode'),` AND ${field('StockRoom','r','Branch')}=${d('Branch')}`)];
       case 'invoice':return [tuple(keys.map(d)),joinLabel(['Branch','CounterNo','TransactionNumber'].map(name=>text(d(name))))];
-      case 'barcode':return [d('BarCode'),text(d('BarCode'))];
+      case 'product':case 'barcode':return [d('BarCode'),text(d('BarCode'))];
+      case 'supplier_product':return [tuple([productValue(detail,'CoBrandClass'),d('BarCode')]),joinLabel([`COALESCE(${text(productValue(detail,'CoBrandClassName'))},'Unassigned')`,text(d('BarCode'))])];
       case 'size_color':case 'substyle':{
         const columns=report.dimension==='size_color'?['Size','Color']:['Style','SubStyle'];
         return [tuple(columns.map(column=>productValue(detail,column))),joinLabel(columns.map(column=>`COALESCE(${text(productValue(detail,col('BarcodeView',column+'Name')||column))},'Unassigned')`))];
@@ -58,17 +59,18 @@ function compileSalesReport(report,schema,filters,permissions={},options={}){
     let header=`${match(detail,'d',master,'m')} AND ${field(master,'m','BillStatus')}='P'`;
     if(filters.accounts?.length)header+=` AND ${text(field(master,'m','CreditAccount'))} IN (${filters.accounts.map(literal).join(',')})`;
     predicates.push(`EXISTS(SELECT 1 FROM ${ref(master)} m WHERE ${header})`);
-    if(detail==='UnPosDetail')predicates.push(`NOT EXISTS(SELECT 1 FROM ${ref('PosMaster')} closed WHERE ${match(detail,'d','PosMaster','closed')})`);
+    if(detail==='UnPosDetail')predicates.push(`NOT EXISTS(SELECT 1 FROM ${ref('PosMaster')} closed WHERE ${match(detail,'d','PosMaster','closed')} AND ${field('PosMaster','closed','BillStatus')}='P')`);
     for(const [key,value] of Object.entries(filters.products||{})){
-      const column=productColumns[key.toLowerCase().replace(/[^a-z]/g,'')];
+      const column=productColumns[key.toLowerCase().replace(/[^a-z0-9]/g,'')];
       if(!column)throw new Error(`Sales filter ${key} needs a documented column mapping`);
-      const productField=field('BarcodeView','p',column),name=col('BarcodeView',`${column}Name`);
+      const productField=field('BarcodeView','p',column),name=col('BarcodeView',column==='DesignNo'||column==='BarCode'?'DesignDesc':`${column}Name`);
       predicates.push(`EXISTS(SELECT 1 FROM ${ref('BarcodeView')} p WHERE ${productMatch(detail)} AND (${productField}=${literal(value)}${name?` OR p.${quote(name)}=${literal(value)}`:''}))`);
     }
     const [groupKey,groupLabel]=grouping(detail);
     return `SELECT ${groupKey} GroupKey,${groupLabel} GroupLabel,${tuple(keys.map(key=>text(d(key))))} BillKey,${date(d('TranDate'))} SaleDate,${d('Branch')} Branch,${d('NetAmount')} NetSales,${d('Quantity')} NetQuantity,${d('Quantity')}*${d('PurchasePrice')} HistoricalCost,CASE WHEN ${d('Quantity')}<0 THEN -${d('Quantity')} ELSE 0 END ReturnQuantity FROM ${ref(detail)} d WHERE ${predicates.join(' AND ')}`;
   });
   const base=`WITH sales AS (${sources.join(' UNION ALL ')})`;
+  if(options.factsOnly)return {base};
   const summary="COALESCE(SUM(NetSales),0) NetSales,COALESCE(SUM(NetQuantity),0) NetQuantity,COALESCE(SUM(NetSales-HistoricalCost),0) GrossProfit,COALESCE(SUM(ReturnQuantity),0) ReturnQuantity,COUNT(DISTINCT BillKey) Bills,COALESCE(100.0*SUM(NetSales-HistoricalCost)/NULLIF(SUM(NetSales),0),0) MarginPercent";
   const plan={title:report.name,detailLevel:'detailed',needsClarification:false,clarification:'',queries:[
     {id:'totals',purpose:'Complete filtered sales totals',sql:`${base} SELECT ${summary} FROM sales`},

@@ -2,7 +2,7 @@ const { getPoolForTenant } = require('../config/db');
 const { getManifest } = require('./knowledgeResourceService');
 const { getBranchPriceAccess } = require('./branchPriceAccessService');
 const { getReport } = require('./businessCatalogService');
-const { compileSalesReport } = require('./salesSemanticCompiler');
+const { compileReport } = require('./deterministicReportCompiler');
 
 function cleanFilters(input={}) {
   const fromDate=String(input.fromDate||''),toDate=String(input.toDate||'');
@@ -21,7 +21,7 @@ async function runLiveReport(user,body={}) {
   const manifest=await getManifest({tenantId:user.tenantId,companyCode:user.companyCode,isAdmin:access.isAdmin,allowedBranches:permissions.branches});
   const schema=manifest.resources.filter(table=>table.objectType!=='UNAVAILABLE'&&table.schema==='dbo').map(table=>({name:table.name,columns:table.columns.map(column=>column.name)}));
   // Neither client SQL, client schema, nor LLM SQL is accepted by this route.
-  const compiled=compileSalesReport(report,schema,filters,permissions,{dialect:'mssql'});
+  const compiled=compileReport(report,schema,filters,permissions,{dialect:'mssql'});
   if(!compiled)throw Object.assign(new Error('This report does not yet support secure live fallback. Sync Business Resources to use its local report.'),{status:422});
   const pool=await getPoolForTenant(user.tenantId);
   const request=pool.request();request.timeout=45000;
@@ -32,6 +32,10 @@ async function runLiveReport(user,body={}) {
   const totals=evidence[0].rows[0],check=evidence[2].rows[0];
   if(evidence[0].rows.length!==1||evidence[2].rows.length!==1)throw new Error('Live totals are incomplete');
   for(const key of Object.keys(totals)){
+    if(totals[key]===null||check[key]===null){
+      if(totals[key]!==check[key])throw new Error('Live unavailable metrics failed reconciliation');
+      continue;
+    }
     const a=Number(totals[key]),b=Number(check[key]);
     if(!Number.isFinite(a)||!Number.isFinite(b)||Math.abs(a-b)>Math.max(.01,Math.abs(a)*1e-10))throw new Error('Live totals failed reconciliation');
   }

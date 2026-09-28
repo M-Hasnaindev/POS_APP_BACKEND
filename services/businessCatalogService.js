@@ -38,7 +38,7 @@ function listReports() {
   const groups = new Map();
   for (const report of catalog) {
     const list = groups.get(report.category) || [];
-    list.push(report);
+    list.push({...report,liveSupported:require('./deterministicReportCompiler').supportsLive(report.code)});
     groups.set(report.category, list);
   }
   return {

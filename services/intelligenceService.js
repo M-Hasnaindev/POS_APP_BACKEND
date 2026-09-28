@@ -99,6 +99,17 @@ async function createPlan({ question, history, schema, language, permissions }) 
   if (!cleanSchema.length) throw Object.assign(new Error("Business resources are not ready"), { status: 409 });
   const recentHistory = Array.isArray(history) ? history.slice(-10).map((item) => ({ role: item?.role === "assistant" ? "assistant" : "user", content: String(item?.content || "").slice(0, 800) })) : [];
   const simpleQuestion=cleanQuestion.toLowerCase().replace(/\b(bhai|please|mujhe)\b/g,'').replace(/[?.!]/g,'').replace(/\s+/g,' ').trim();
+  const forecastMatch=simpleQuestion.match(/^(?:next|agle|aglay) (7|15|30|90) (?:days?|din)(?: ki)? sales (?:forecast|prediction)(?: batao)?$/);
+  if(forecastMatch){
+    const horizon=Number(forecastMatch[1]),codes={7:'017',15:'018',30:'019',90:'020'};
+    const toDate=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Karachi',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+    const fromDate=new Date(Date.parse(toDate)-29*86400000).toISOString().slice(0,10);
+    const filters={fromDate,toDate,branches:[],stores:[],accounts:[],products:{}};
+    const code=`RPT_08_${codes[horizon]}_NEXT_${horizon}_DAYS_SALES_FORECAST`;
+    const plan=require('./forecastSemanticCompiler').compileForecastReport(getReport(code),cleanSchema,filters,permissions);
+    plan.assumptions.unshift(`No historical analysis period was specified, so the selected window defaults to ${fromDate} through ${toDate}.`);
+    return {...plan,liveRequest:{code,filters}};
+  }
   if(/^(aaj|aj|today)( ki|'s)? (total )?sales( (batao|bata do|kitni hai|kitni hain))?$/.test(simpleQuestion)){
     const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Karachi',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
     try{
@@ -149,7 +160,9 @@ async function repairPlan({ question, failedSql, failure, history, schema, langu
 
 function normalizeFilters(filters) {
   const value = filters && typeof filters === "object" ? filters : {};
-  const cleanValue = (input, limit = 120) => String(input || "").replace(/[;'"`\\]/g, "").replace(/--|\/\*|\*\//g, "").trim().slice(0, limit);
+  // Preserve exact business names (e.g. O'Neil). SQL compilers escape literals;
+  // silently deleting punctuation changes the selected filter's meaning.
+  const cleanValue = (input, limit = 120) => String(input ?? "").replace(/[\x00-\x1f]/g, "").trim().slice(0, limit);
   return {
     fromDate: cleanValue(value.fromDate, 10),
     toDate: cleanValue(value.toDate, 10),
@@ -175,7 +188,7 @@ async function createReportPlan({ code, filters, schema, language, permissions, 
   if (!cleanSchema.length) throw Object.assign(new Error("Business resources are not ready"), { status: 409 });
   const cleanFilters = normalizeFilters(filters);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanFilters.fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(cleanFilters.toDate) || cleanFilters.fromDate > cleanFilters.toDate) throw Object.assign(new Error("A valid report date range is required"), { status: 400 });
-  const compiled=require('./salesSemanticCompiler').compileSalesReport(report,cleanSchema,cleanFilters,permissions);
+  const compiled=require('./deterministicReportCompiler').compileReport(report,cleanSchema,cleanFilters,permissions);
   if(compiled)return {report,filters:cleanFilters,plan:compiled};
   const question = `Generate report ${report.id}: ${report.name}. Category: ${report.category}. Family: ${report.family}. Metrics: ${report.metrics.join(", ")}. Dimension: ${report.dimension || "overall"}. Analysis contract: ${report.analysisContract}. Advice intent: ${report.advice}. Apply exactly these filters: ${JSON.stringify(cleanFilters)}. Return both amount and quantity where relevant. Use readable names. For any sales fact, Pos and UnPos paid detail must both be included and de-duplicated by Branch + TransactionNumber. Use date(detailDate) for the complete inclusive filter range. Overall totals must cover the full filtered scope; LIMIT applies only to ranked detail.`;
   const repairContext = `\nMANDATORY RECONCILIATION CONTRACT: Return exactly three queries with ids totals, detail, check. totals produces exactly one row of full-scope numeric metrics. detail supplies the named grouping/ranking. check independently sums the untruncated grouped facts and produces exactly one row with the SAME numeric column aliases as totals. Do not SUM percentages; recompute ratios from their full numerator and denominator. COALESCE empty aggregates to zero. All three queries must apply the filters. Use detail for visualization. If required source fields are missing, request clarification rather than inventing data.${failure ? ` Previous execution failed: ${String(failure).slice(0,1000)}. Correct the query using the exact schema.` : ""}`;

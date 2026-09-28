@@ -6,7 +6,7 @@ const db=new DatabaseSync(':memory:');
 const header=['CompanyCode','Branch','CounterNo','TransactionNumber','BillStatus','CreditAccount'];
 const detail=['CompanyCode','Branch','CounterNo','TransactionNumber','TranDate','Cancel','StoreCode','BarCode','NetAmount','Quantity','PurchasePrice'];
 const schema=[{name:'PosMaster',columns:header},{name:'UnPosMaster',columns:header},{name:'PosDetail',columns:detail},{name:'UnPosDetail',columns:detail},{name:'BranchFile',columns:['BranchCode','BranchName']}];
-const attributes=['DesignNo','Brand','CoBrand','Catagory','SubCatagory','Department','SubDepartment','Style','SubStyle','Season','Fabric','Gender','Size','Color'];
+const attributes=['DesignNo','Brand','CoBrand','Catagory','SubCatagory','Department','SubDepartment','Style','SubStyle','Season','Fabric','Gender','Size','Color','CoBrandClass','StyleClass','SubStyle1Class','SubStyle2Class'];
 schema.push({name:'BarcodeView',columns:['BarCode',...attributes.flatMap(name=>[name,name+'Name'])]},{name:'StockRoom',columns:['Code','Name','Branch']});
 for(const table of schema)db.exec(`CREATE TABLE ${table.name}(${table.columns.map(column=>`${column} ${['NetAmount','Quantity','PurchasePrice'].includes(column)?'REAL':'TEXT'}`).join(',')})`);
 const put=(table,row)=>db.prepare(`INSERT INTO ${table} VALUES(${row.map(()=>'?').join(',')})`).run(...row);
@@ -47,4 +47,13 @@ const empty=compileSalesReport(brandReport,schema,{...filters,products:{brand:'m
 assert.equal(db.prepare(empty.queries[0].sql).get().MarginPercent,0);
 const unsupported=catalog.find(report=>report.code==='RPT_02_026_NO_SALE_ITEMS');
 assert.equal(compileSalesReport(unsupported,schema,filters,{isAdmin:true}),null);
+for(const [key,value] of [['supplier','CoBrandClass readable'],['styleClass1','SubStyle1Class readable'],['styleClass2','SubStyle2Class readable']]){
+  const selected=compileSalesReport(brandReport,schema,{...filters,products:{[key]:value}},{isAdmin:true});
+  assert.equal(db.prepare(selected.queries[0].sql).get().NetSales,280,`${key} must use its exact distinct column`);
+}
+put('PosMaster',['TT','A','1','UNPAID','N','acct']);
+put('UnPosMaster',['TT','A','1','UNPAID','P','acct']);
+put('UnPosDetail',['TT','A','1','UNPAID','2026-09-10','N','S','X',50,1,10]);
+const pendingPaid=compileSalesReport(brandReport,schema,filters,{isAdmin:true});
+assert.equal(db.prepare(pendingPaid.queries[0].sql).get().NetSales,330,'An unpaid closed header must not hide a paid unclosed bill');
 db.close();console.log(`PASS: ${tested} compiled report routes; branch/counter document keys, duplicate headers, signed returns, cancellation, closed/unclosed deduplication, permissions and reconciliation.`);
