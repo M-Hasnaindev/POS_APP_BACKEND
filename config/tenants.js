@@ -20,12 +20,19 @@ function buildTenant(index) {
   const prefix = `DB_${index}`;
   const database = optional(`${prefix}_DATABASE`, optional(`DB_DATABASE_${index}`));
   const key = optional(`${prefix}_KEY`, optional(`DB_KEY_${index}`));
+  const keyExpiresAtValue = optional(`${prefix}_KEY_EXPIRES_AT`);
 
   if (!database || !key) return null;
+
+  const keyExpiresAt = keyExpiresAtValue ? new Date(keyExpiresAtValue) : null;
+  if (keyExpiresAt && Number.isNaN(keyExpiresAt.getTime())) {
+    throw new Error(`Invalid ${prefix}_KEY_EXPIRES_AT. Use an ISO-8601 date.`);
+  }
 
   return {
     id: `tenant_${index}`,
     key,
+    keyExpiresAt,
     label: optional(`${prefix}_LABEL`, `Company ${index}`),
     config: {
       user: optional(`${prefix}_USER`, required("DB_USER")),
@@ -72,7 +79,11 @@ function constantTimeEquals(a, b) {
 
 function resolveTenantByKey(key) {
   if (!key) return null;
-  return tenants.find((tenant) => constantTimeEquals(tenant.key, key)) || null;
+  const now = Date.now();
+  return tenants.find((tenant) =>
+    constantTimeEquals(tenant.key, key)
+    && (!tenant.keyExpiresAt || tenant.keyExpiresAt.getTime() >= now)
+  ) || null;
 }
 
 function getTenantById(tenantId) {
