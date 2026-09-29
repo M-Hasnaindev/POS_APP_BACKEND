@@ -65,11 +65,30 @@ function summarizePricing(branches) {
 async function getBranchPriceAccess({ tenantId, userId, companyCode, pool }) {
   const connection = pool || (await getPoolForTenant(tenantId));
   const safeUserId = String(userId || "").trim();
-  const safeCompanyCode = String(companyCode || "").trim();
+  let safeCompanyCode = String(companyCode || "").trim();
 
   if (!safeUserId) {
     throw new Error("User ID is required to resolve branch pricing access");
   }
+
+  // Legacy/admin Security rows can have an empty CompanyCode even though the
+  // authenticated tenant database represents one company. Resolve that scope
+  // server-side so mobile permissions, Product 360 and AI remain usable.
+  if (!safeCompanyCode) {
+    const userCompanies = await connection.request()
+      .input("userId", sql.VarChar(10), safeUserId)
+      .query(`SELECT DISTINCT LTRIM(RTRIM(CompanyCode)) CompanyCode FROM Security
+        WHERE UserID=@userId AND NULLIF(LTRIM(RTRIM(CompanyCode)),'') IS NOT NULL`);
+    const candidates = (userCompanies.recordset || []).map((row) => String(row.CompanyCode || "").trim()).filter(Boolean);
+    if (candidates.length === 1) safeCompanyCode = candidates[0];
+    if (!safeCompanyCode) {
+      const tenantCompanies = await connection.request().query(`SELECT DISTINCT LTRIM(RTRIM(CompanyCode)) CompanyCode
+        FROM BranchFile WHERE NULLIF(LTRIM(RTRIM(CompanyCode)),'') IS NOT NULL`);
+      const tenantCandidates = (tenantCompanies.recordset || []).map((row) => String(row.CompanyCode || "").trim()).filter(Boolean);
+      if (tenantCandidates.length === 1) safeCompanyCode = tenantCandidates[0];
+    }
+  }
+  if (!safeCompanyCode) throw new Error("Company scope could not be resolved for branch pricing access");
 
   const securityResult = await connection
     .request()
@@ -79,7 +98,8 @@ async function getBranchPriceAccess({ tenantId, userId, companyCode, pool }) {
       SELECT TOP 1 CompanyCode, UserID, UserType, AllowBranches
       FROM Security
       WHERE UserID = @userId
-        AND ISNULL(CompanyCode, '') = @companyCode
+        AND (ISNULL(CompanyCode, '') = @companyCode OR ISNULL(CompanyCode, '') = '')
+      ORDER BY CASE WHEN ISNULL(CompanyCode, '') = @companyCode THEN 0 ELSE 1 END
     `);
 
   if (!securityResult.recordset.length) {

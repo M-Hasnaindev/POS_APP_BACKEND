@@ -26,6 +26,52 @@ function hasBusinessData(row) {
   });
 }
 
+function supplierName(row) {
+  return String(
+    row?.SupplierName
+    || row?.Supplier
+    || row?.CoBrandClassName
+    || row?.CoBrandName
+    || row?.VendorName
+    || "",
+  ).trim();
+}
+
+async function enrichSupplierNames(pool, rows) {
+  const missingBarcodes = [...new Set(rows
+    .filter((row) => !supplierName(row))
+    .map((row) => String(row?.Barcode || row?.BarCode || "").trim())
+    .filter(Boolean))];
+  if (!missingBarcodes.length) return rows;
+
+  const suppliers = new Map();
+  for (let offset = 0; offset < missingBarcodes.length; offset += 800) {
+    const chunk = missingBarcodes.slice(offset, offset + 800);
+    const request = pool.request();
+    const parameters = chunk.map((barcode, index) => {
+      const name = `barcode${index}`;
+      request.input(name, sql.NVarChar(100), barcode);
+      return `@${name}`;
+    });
+    const result = await request.query(`SELECT LTRIM(RTRIM(BarCode)) BarCode,
+      MAX(NULLIF(LTRIM(RTRIM(CoBrandClassName)), '')) SupplierName
+      FROM dbo.BarcodeView
+      WHERE LTRIM(RTRIM(BarCode)) IN (${parameters.join(",")})
+      GROUP BY LTRIM(RTRIM(BarCode))`);
+    for (const item of result.recordset || []) {
+      const name = String(item.SupplierName || "").trim();
+      if (name) suppliers.set(String(item.BarCode || "").trim(), name);
+    }
+  }
+
+  return rows.map((row) => {
+    if (supplierName(row)) return row;
+    const barcode = String(row?.Barcode || row?.BarCode || "").trim();
+    const resolved = suppliers.get(barcode);
+    return resolved ? { ...row, SupplierName: resolved } : row;
+  });
+}
+
 async function resolveCompanyCode(pool, { companyCode, requestedCompanyCode, userId }) {
   const tokenCompany = String(companyCode || "").trim();
   if (tokenCompany) return tokenCompany;
@@ -116,7 +162,7 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
     .execute("dbo.POSStockMovement");
 
   const rawRows = result.recordset || [];
-  const rows = rawRows.filter(hasBusinessData);
+  const rows = await enrichSupplierNames(pool, rawRows.filter(hasBusinessData));
   console.log("[StockSnapshot] Completed", {
     tenantId,
     companyCode: effectiveCompanyCode,
@@ -129,4 +175,4 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
   return { rows, procedureRows: rawRows.length, durationMs: Date.now() - startedAt };
 }
 
-module.exports = { getStockSnapshot, parseDateOnly, hasBusinessData, resolveCompanyCode };
+module.exports = { getStockSnapshot, parseDateOnly, hasBusinessData, resolveCompanyCode, enrichSupplierNames };
