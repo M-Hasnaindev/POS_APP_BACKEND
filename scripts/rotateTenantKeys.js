@@ -24,13 +24,14 @@ function companySlug(value) {
   return slug || "COMPANY";
 }
 
-function encryptedYear(year, tenantId, companyName, purpose) {
-  return crypto
+function encryptedCompanyName(tenantId, companyName) {
+  const digest = crypto
     .createHmac("sha256", process.env.JWT_SECRET)
-    .update(`cherrys-tenant-key:v1:${tenantId}:${companyName}:${purpose}:${year}`)
-    .digest("base64url")
-    .slice(0, 10)
-    .toUpperCase();
+    .update(`cherrys-company-key:v2:${tenantId}:${companyName}`)
+    .digest();
+  return Array.from(digest.subarray(0, 18), (value) =>
+    String.fromCharCode(65 + (value % 26))
+  ).join("");
 }
 
 function upsertEnv(source, name, value) {
@@ -101,9 +102,8 @@ async function main() {
     `);
     const companyName = String(result.recordset[0]?.AccountName || tenant.label).trim();
     const slug = companySlug(companyName);
-    const createdToken = encryptedYear(createdYear, tenant.id, companyName, "created");
-    const expiryToken = encryptedYear(expiryYear, tenant.id, companyName, "expires");
-    const key = `CT-${createdToken}-${slug}-${expiryToken}`;
+    const encryptedName = encryptedCompanyName(tenant.id, companyName);
+    const key = `${slug}-${encryptedName}`;
 
     const values = {
       [`DB_${index}_KEY`]: key,
@@ -140,7 +140,7 @@ async function main() {
     rotated: rotations.map((item) => ({
       tenantId: item.tenantId,
       companyName: item.companyName,
-      format: `CT-${"*".repeat(10)}-${companySlug(item.companyName)}-${"*".repeat(10)}`,
+      format: `${companySlug(item.companyName)}-${"*".repeat(18)}`,
       expiresAt: item.expiresAt,
     })),
     vercelUpdated: process.argv.includes("--vercel"),
