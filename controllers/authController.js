@@ -23,6 +23,23 @@ function verifyTenantToken(token) {
   return decoded;
 }
 
+async function getPublicTenantWithCompanyName(tenant) {
+  const publicTenant = getPublicTenant(tenant);
+  try {
+    const db = await getPoolForTenant(tenant.id);
+    const result = await db.request().query(`
+      SELECT TOP 1 AccountName
+      FROM AccountInfo
+      WHERE NULLIF(LTRIM(RTRIM(AccountName)), '') IS NOT NULL
+    `);
+    const companyName = String(result.recordset[0]?.AccountName || "").trim();
+    return { ...publicTenant, companyName: companyName || publicTenant.label };
+  } catch (error) {
+    console.warn("COMPANY NAME LOOKUP WARNING:", error.message);
+    return { ...publicTenant, companyName: publicTenant.label };
+  }
+}
+
 // ============================================
 // RESOLVE COMPANY KEY -> TENANT
 // ============================================
@@ -43,7 +60,7 @@ exports.resolveTenant = async (req, res) => {
 
     return res.json({
       success: true,
-      tenant: getPublicTenant(tenant),
+      tenant: await getPublicTenantWithCompanyName(tenant),
       tenantToken: signTenantToken(tenant.id),
     });
   } catch (err) {
@@ -152,7 +169,7 @@ exports.login = async (req, res) => {
       success: true,
       message: "Login success",
       token,
-      tenant: getPublicTenant(getTenantById(tenantPayload.tenantId)),
+      tenant: await getPublicTenantWithCompanyName(getTenantById(tenantPayload.tenantId)),
       user,
     });
   } catch (err) {
