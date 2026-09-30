@@ -72,6 +72,29 @@ async function enrichSupplierNames(pool, rows) {
   });
 }
 
+async function enrichBranchNames(pool, rows, companyCode) {
+  const branchResult = await pool.request()
+    .input("companyCode", sql.VarChar(6), String(companyCode || "").trim())
+    .query(`SELECT LTRIM(RTRIM(BranchCode)) BranchCode,
+      MAX(NULLIF(LTRIM(RTRIM(BranchName)), '')) BranchName,
+      MAX(NULLIF(LTRIM(RTRIM(ShortName)), '')) ShortName
+      FROM dbo.BranchFile
+      WHERE LTRIM(RTRIM(CompanyCode))=@companyCode
+        AND NULLIF(LTRIM(RTRIM(BranchCode)), '') IS NOT NULL
+      GROUP BY LTRIM(RTRIM(BranchCode))`);
+  const names = new Map((branchResult.recordset || []).map((row) => {
+    const code = String(row.BranchCode || "").trim();
+    const name = String(row.BranchName || row.ShortName || code).trim();
+    return [code, name];
+  }));
+  return rows.map((row) => {
+    const code = String(row?.Branch || row?.BranchCode || "").trim();
+    const resolved = names.get(code);
+    const current = String(row?.BranchName || "").trim();
+    return resolved && (!current || current === code) ? { ...row, BranchName: resolved } : row;
+  });
+}
+
 async function resolveCompanyCode(pool, { companyCode, requestedCompanyCode, userId }) {
   const tokenCompany = String(companyCode || "").trim();
   if (tokenCompany) return tokenCompany;
@@ -162,7 +185,8 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
     .execute("dbo.POSStockMovement");
 
   const rawRows = result.recordset || [];
-  const rows = await enrichSupplierNames(pool, rawRows.filter(hasBusinessData));
+  const namedRows = await enrichBranchNames(pool, rawRows.filter(hasBusinessData), effectiveCompanyCode);
+  const rows = await enrichSupplierNames(pool, namedRows);
   console.log("[StockSnapshot] Completed", {
     tenantId,
     companyCode: effectiveCompanyCode,
@@ -175,4 +199,4 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
   return { rows, procedureRows: rawRows.length, durationMs: Date.now() - startedAt };
 }
 
-module.exports = { getStockSnapshot, parseDateOnly, hasBusinessData, resolveCompanyCode, enrichSupplierNames };
+module.exports = { getStockSnapshot, parseDateOnly, hasBusinessData, resolveCompanyCode, enrichSupplierNames, enrichBranchNames };
