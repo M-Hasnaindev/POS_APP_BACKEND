@@ -19,8 +19,19 @@ const definitions = [
  ['movement','Product movement & stock cover','Stock decisions','BarCode','stock','StockQty'],
  ['store-stock','Store stock investment','Stock decisions','StoreName','stock','StockValue'],
 ];
+const presentation = {
+ 'sales-summary':['none','executive-overview'], 'sales-trend':['area','time-series'],
+ 'branch-sales':['ranked','branch-league'], 'brand-sales':['donut','brand-share'],
+ 'category-sales':['pie','category-mix'], 'season-sales':['column','season-profile'],
+ 'product-sales':['bar','product-ranking'], 'discounts':['donut','discount-composition'],
+ 'returns':['ranked','exception-watch'], 'profit':['progress','profit-contribution'],
+ 'stock-summary':['none','investment-overview'], 'branch-stock':['donut','branch-investment'],
+ 'brand-stock':['pie','brand-investment'], 'category-stock':['column','category-investment'],
+ 'season-stock':['bar','season-investment'], 'transit':['ranked','stock-flow'],
+ 'movement':['progress','movement-cover'], 'store-stock':['donut','store-investment'],
+};
 const reports=definitions.map(([code,name,category,dimension,mode,metric],i)=>({
- id:i+1,uiVariant:1,code:'GROW_'+code,name,category,dimension,mode,family:mode,uiFamily:'summary',chartType:dimension==='day'?'line':dimension?'bar':'none',
+ id:i+1,uiVariant:i+1,code:'GROW_'+code,name,category,dimension,mode,family:mode,uiFamily:presentation[code][1],chartType:presentation[code][0],
  metrics:[metric],advice:mode==='sales'?'Compare contribution before changing purchasing or promotion.':'Review stock and movement before replenishment.',
  descriptionLines:[mode==='sales'?'Sales Dashboard ke synced transaction data se sales, quantity aur historical cost-based profit samjhein.':'Stock Room ke latest procedure snapshot se investment aur movement samjhein. Ye historical daily stock ledger nahi hai.'],
  sourceDescriptionLines:['Existing Sales Dashboard / Stock Room data. No separate AI download.'],
