@@ -6,7 +6,7 @@ function normalize(value){return String(value||'').toLowerCase().replace(/\b(aaj
 function resolveIntent(question,previous=null,today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Karachi',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())){
  let rest=normalize(question),domain=null,dimension=null,fromDate=null,toDate=null;
  const consume=(pattern,fn)=>{rest=rest.replace(pattern,(...args)=>{fn?.(...args);return ' ';});};
- const detailLevel=/\b(short|brief|sirf|total)\b/.test(rest)?'short':/\b(detailed|explain|samjhao)\b/.test(rest)?'detailed':previous?.detailLevel||'short';
+ const detailLevel=/\b(short|brief|sirf|total)\b/.test(rest)?'short':/\b(detailed|explain|samjhao)\b/.test(rest)?'detailed':previous?.detailLevel||'detailed';
  if(/\bkal\b/.test(rest))return {clarification:'Kal se aap yesterday murad le rahe hain ya tomorrow?'};
  if(/\bpurchase returns?\b/.test(rest))consume(/\bpurchase returns?\b/g,()=>domain='purchase-return');
  else if(/\bpurchase\b/.test(rest))consume(/\bpurchase\b/g,()=>domain='purchase');

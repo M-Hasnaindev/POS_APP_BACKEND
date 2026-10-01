@@ -10,7 +10,8 @@ const schema=[{name:'SalesFacts',columns:['BillDate','Branch','BranchName','Qty'
  const catalog=require('../services/businessCatalogService').listReports();assert.equal(catalog.count,18);assert.ok(catalog.categories.every(c=>c.reports.every(r=>r.code.startsWith('GROW_'))));
  assert.equal(reports.length,18);
  assert.equal(new Set(reports.map(report=>report.uiFamily)).size,18);
- assert.equal(new Set(reports.map(report=>report.chartType)).size,8);
+ assert.equal(new Set(reports.map(report=>report.chartType)).size,7);
+ assert.equal(reports.every(report=>report.chartType!=='none'),true,'Every report must include a data visualization');
  const denied=compile('GROW_sales-summary',{fromDate:'2026-09-01',toDate:'2026-09-28'}, {isAdmin:false,branches:[]});assert.match(denied.queries[0].sql,/0=1/);
  console.log('PASS: existing-data assistant totals, follow-up, server branch scope, no live fallback, focused catalog');
 })().catch(error=>{console.error(error);process.exitCode=1});

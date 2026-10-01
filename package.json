@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "diagnose:push": "node scripts/diagnosePush.js",
     "test:push": "node scripts/testPushDelivery.js",
-    "test:ai": "node scripts/testExistingDataPlan.js && node scripts/testAssistantIntent.js && node scripts/testSalesSemanticCompiler.js && node scripts/testForecastSemanticCompiler.js && node scripts/testPurchaseSemanticCompiler.js && node scripts/testLiveReportSecurity.js",
+    "generate:ai-corpus": "node scripts/generateSalesStockQuestionCorpus.js",
+    "test:ai": "node scripts/testSalesStockQuestionCorpus.js && node scripts/testExistingDataPlan.js && node scripts/testAssistantIntent.js && node scripts/testEvidenceAnalysis.js && node scripts/testSalesSemanticCompiler.js && node scripts/testForecastSemanticCompiler.js && node scripts/testPurchaseSemanticCompiler.js && node scripts/testLiveReportSecurity.js",
     "test": "npm run test:push"
   },
   "keywords": [],

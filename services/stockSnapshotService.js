@@ -37,14 +37,14 @@ function supplierName(row) {
   ).trim();
 }
 
-async function enrichSupplierNames(pool, rows) {
+async function enrichProductNames(pool, rows) {
   const missingBarcodes = [...new Set(rows
-    .filter((row) => !supplierName(row))
+    .filter((row) => !supplierName(row) || !String(row?.GenderName || row?.Gender || "").trim())
     .map((row) => String(row?.Barcode || row?.BarCode || "").trim())
     .filter(Boolean))];
   if (!missingBarcodes.length) return rows;
 
-  const suppliers = new Map();
+  const productNames = new Map();
   for (let offset = 0; offset < missingBarcodes.length; offset += 800) {
     const chunk = missingBarcodes.slice(offset, offset + 800);
     const request = pool.request();
@@ -54,21 +54,28 @@ async function enrichSupplierNames(pool, rows) {
       return `@${name}`;
     });
     const result = await request.query(`SELECT LTRIM(RTRIM(BarCode)) BarCode,
-      MAX(NULLIF(LTRIM(RTRIM(CoBrandClassName)), '')) SupplierName
+      MAX(NULLIF(LTRIM(RTRIM(CoBrandClassName)), '')) SupplierName,
+      MAX(NULLIF(LTRIM(RTRIM(GenderName)), '')) GenderName
       FROM dbo.BarcodeView
       WHERE LTRIM(RTRIM(BarCode)) IN (${parameters.join(",")})
       GROUP BY LTRIM(RTRIM(BarCode))`);
     for (const item of result.recordset || []) {
-      const name = String(item.SupplierName || "").trim();
-      if (name) suppliers.set(String(item.BarCode || "").trim(), name);
+      productNames.set(String(item.BarCode || "").trim(), {
+        supplier: String(item.SupplierName || "").trim(),
+        gender: String(item.GenderName || "").trim(),
+      });
     }
   }
 
   return rows.map((row) => {
-    if (supplierName(row)) return row;
     const barcode = String(row?.Barcode || row?.BarCode || "").trim();
-    const resolved = suppliers.get(barcode);
-    return resolved ? { ...row, SupplierName: resolved } : row;
+    const resolved = productNames.get(barcode);
+    if (!resolved) return row;
+    return {
+      ...row,
+      ...(!supplierName(row) && resolved.supplier ? { SupplierName: resolved.supplier } : {}),
+      ...(!String(row?.GenderName || row?.Gender || "").trim() && resolved.gender ? { GenderName: resolved.gender } : {}),
+    };
   });
 }
 
@@ -186,7 +193,7 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
 
   const rawRows = result.recordset || [];
   const namedRows = await enrichBranchNames(pool, rawRows.filter(hasBusinessData), effectiveCompanyCode);
-  const rows = await enrichSupplierNames(pool, namedRows);
+  const rows = await enrichProductNames(pool, namedRows);
   console.log("[StockSnapshot] Completed", {
     tenantId,
     companyCode: effectiveCompanyCode,
@@ -199,4 +206,13 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
   return { rows, procedureRows: rawRows.length, durationMs: Date.now() - startedAt };
 }
 
-module.exports = { getStockSnapshot, parseDateOnly, hasBusinessData, resolveCompanyCode, enrichSupplierNames, enrichBranchNames };
+module.exports = {
+  getStockSnapshot,
+  parseDateOnly,
+  hasBusinessData,
+  resolveCompanyCode,
+  enrichProductNames,
+  // Retain the old export name for callers while adding gender enrichment.
+  enrichSupplierNames: enrichProductNames,
+  enrichBranchNames,
+};
