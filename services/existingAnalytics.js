@@ -56,8 +56,9 @@ function compile(code,filters,permissions){
  if(permissions){if(!permissions.isAdmin&&!permissions.branches?.length)where.push('0=1');else if(!permissions.isAdmin)where.push('Branch IN ('+permissions.branches.map(b=>quote(typeof b==='string'?b:b.BranchCode)).join(',')+')');}
  const condition=where.length?where.join(' AND '):'1=1';
  const metrics=stock?{StockQty:'StockQty',StockValue:'StockValue',InTransitQty:'InTransitQty',TransferInQty:'TransferInQty',TransferOutQty:'TransferOutQty',PeriodNetSoldQty:'SalesQty',PurchaseQty:'PurchaseQty'}:
- {NetSales:'NetAmount',NetQuantity:'Qty',GrossProfit:'GrossProfit',Discount:'TotalDiscount',ReturnQuantity:'CASE WHEN Qty<0 THEN -Qty ELSE 0 END'};
- const sums=Object.entries(metrics).map(([name,expr])=>'COALESCE(SUM('+expr+'),0) AS '+name).join(',');
+ {NetSales:'NetAmount',NetQuantity:'Qty',GrossProfit:'GrossProfit',CostOfSales:'CostAmountofSales',Discount:'TotalDiscount',ReturnQuantity:'CASE WHEN Qty<0 THEN -Qty ELSE 0 END'};
+ const additiveSums=Object.entries(metrics).map(([name,expr])=>'COALESCE(SUM('+expr+'),0) AS '+name).join(',');
+ const sums=additiveSums+(stock?'':',COUNT(DISTINCT BillKey) AS BillCount');
  const primaryName=report.dimension||(stock?'BranchName':'day');
  const secondaryName=stock?(primaryName==='BranchName'||primaryName==='StoreName'?'CatagoryName':'BranchName'):(primaryName==='day'?'BranchName':'day');
  const dimensionFor=name=>name==='day'?'date(BillDate)':name==='BranchName'?'Branch':name==='StoreName'?'StoreCode':name;
@@ -69,7 +70,9 @@ function compile(code,filters,permissions){
  const secondaryDimension=dimensionFor(secondaryName),secondaryLabel=labelFor(secondaryName);
  const secondary='SELECT '+secondaryLabel+' AS Label,'+sums+cover+' FROM '+table+' WHERE '+condition+' GROUP BY '+secondaryDimension+' ORDER BY '+(secondaryName==='day'?'Label ASC':report.metrics[0]+' DESC')+' LIMIT 120';
  const totals='SELECT '+sums+' FROM '+table+' WHERE '+condition;
- const check='SELECT '+Object.keys(metrics).map(key=>'COALESCE(SUM('+key+'),0) AS '+key).join(',')+' FROM ('+base+' GROUP BY '+dimension+') grouped';
+ const check=stock
+  ?'SELECT '+Object.keys(metrics).map(key=>'COALESCE(SUM('+key+'),0) AS '+key).join(',')+' FROM ('+base+' GROUP BY '+dimension+') grouped'
+  :'SELECT '+Object.keys(metrics).map(key=>'COALESCE(SUM('+key+'),0) AS '+key).join(',')+',COUNT(DISTINCT BillKey) AS BillCount FROM (SELECT BillKey,'+additiveSums+' FROM '+table+' WHERE '+condition+' GROUP BY '+dimension+',BillKey) grouped';
  const assumptions=[stock?'Stock figures cover the Stock Room snapshot period shown in data coverage, not arbitrary historical dates.':'Profit = synced NetAmount minus transaction CostAmountofSales, matching Sales Dashboard; it is not net accounting profit.',
  'No forecast, target, guaranteed growth or exact stock age is inferred from missing data.',
  'Detail shows at most 500 groups; totals include the full selected scope.'];
