@@ -7,7 +7,7 @@ const ranges = counts.map((_, i) => ({ barcodeFrom: String(i), barcodeTo: String
 const copy = value => value && structuredClone(value);
 function mock(name, exports) { require.cache[require.resolve(name)] = { id: name, filename: name, loaded: true, exports }; }
 mock('@vercel/functions', { waitUntil: work => background.push(work) });
-mock('../config/db', { getPoolForTenant: async () => ({ request: () => ({ query: async () => ({ recordset: ranges }) }) }) });
+mock('../config/db', { sql:{VarChar:()=>null,Int:null},getPoolForTenant: async () => ({ request: () => ({ input(){return this;},query: async text => ({ recordset: text.includes('dbo.Defaults')?[{transit:'Y',zeroSeeds:1}]:ranges }) }) }) });
 mock('../services/stockSnapshotService', {
   resolveCompanyCode: async () => 'TEST',
   getStockSnapshot: async (options, sink) => {

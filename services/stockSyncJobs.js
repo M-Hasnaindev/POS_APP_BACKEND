@@ -1,5 +1,5 @@
 const { waitUntil } = require('@vercel/functions');
-const { getPoolForTenant } = require('../config/db');
+const { sql, getPoolForTenant } = require('../config/db');
 const { getStockSnapshot, resolveCompanyCode } = require('./stockSnapshotService');
 const store = require('./syncPageStore');
 
@@ -15,14 +15,20 @@ async function startStockJob(options) {
   const pool = await getPoolForTenant(options.tenantId);
   const companyCode = await resolveCompanyCode(pool, options);
   const resolved = { ...options, companyCode };
-  const job = await store.startJob('stock-ranges-v1', resolved, null);
+  const job = await store.startJob('stock-ranges-v2', resolved, null);
   if (job.status === 'processing' && !job.metadata.options && await store.claimStep(job.jobId)) {
     // Partition the same BarcodeView used by the procedure. SQL collation and
     // inclusive MIN/MAX boundaries ensure no overlaps and no skipped products.
     // All branches/stores stay inside each partition, including historical ones.
-    const ranges = await pool.request().query(`
+    // Transit-enabled reports seed products across every store. Other reports
+    // return only movements, so wider ranges avoid repeatedly scanning years
+    // of transactions for a handful of records.
+    const settings = await pool.request().input('company', sql.VarChar(6), companyCode)
+      .query("SELECT TOP(1) ISNULL(chkPOSInTransit,'N') transit, CASE WHEN OBJECT_DEFINITION(OBJECT_ID('dbo.POSStockMovement')) LIKE '%@Report7ZeroSeeds%' OR OBJECT_DEFINITION(OBJECT_ID('dbo.POSStockMovement')) IS NULL THEN 1 ELSE 0 END zeroSeeds FROM dbo.Defaults WHERE CompanyID=@company");
+    const rangeSize = String(settings.recordset[0]?.transit).trim() === 'Y' && settings.recordset[0]?.zeroSeeds !== 0 ? 2000 : 10000;
+    const ranges = await pool.request().input('rangeSize', sql.Int, rangeSize).query(`
       WITH Codes AS (SELECT DISTINCT BarCode FROM dbo.BarcodeView WHERE BarCode IS NOT NULL),
-      Numbered AS (SELECT BarCode, (ROW_NUMBER() OVER(ORDER BY BarCode)-1)/2000 AS Bucket FROM Codes)
+      Numbered AS (SELECT BarCode, (ROW_NUMBER() OVER(ORDER BY BarCode)-1)/@rangeSize AS Bucket FROM Codes)
       SELECT MIN(BarCode) barcodeFrom,MAX(BarCode) barcodeTo FROM Numbered GROUP BY Bucket ORDER BY Bucket`);
     job.metadata = { options: resolved, branches: ranges.recordset.map((_,i)=>String(i)), ranges: ranges.recordset, children: {} };
     if (!ranges.recordset.length) {

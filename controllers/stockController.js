@@ -65,17 +65,24 @@ exports.startSnapshotJob = async (req, res) => {
     return res.status(job.status === "ready" ? 200 : 202).json({ success: true, ...job });
   } catch (error) {
     console.error("STOCK SNAPSHOT JOB START ERROR:", error?.message || error);
-    return res.status(400).json({ success: false, message: error?.message || "Unable to start stock sync" });
+    const invalid = ['INVALID_DATE_RANGE', 'COMPANY_CODE_REQUIRED'].includes(error?.code);
+    return res.status(invalid ? 400 : 503).json({ success: false, message: invalid ? error.message : "Stock sync is temporarily unavailable. Please retry." });
   }
 };
 
 exports.getSnapshotJobStatus = async (req, res) => {
+  try {
   const job = await getStockJob(req.params.jobId, req.user.tenantId, req.user.userId);
   if (!job) return res.status(404).json({ success: false, message: "Stock sync job was not found" });
   return res.json({ success: true, ...job });
+  } catch (error) {
+    console.error('[StockSync] Status unavailable:', error.code || error.name);
+    return res.status(503).json({ success: false, message: 'Stock status is temporarily unavailable. Please retry.' });
+  }
 };
 
 exports.getSnapshotJobPage = async (req, res) => {
+  try {
   const job = await findJob(req.params.jobId, req.user.tenantId, req.user.userId);
   if (!job) return res.status(404).json({ success: false, message: "Stock sync job was not found" });
   if (job.status === "failed") return res.status(503).json({ success: false, message: job.error });
@@ -91,4 +98,8 @@ exports.getSnapshotJobPage = async (req, res) => {
     return res.send(await gzip(Buffer.from(JSON.stringify(payload))));
   }
   return res.json(payload);
+  } catch (error) {
+    console.error('[StockSync] Page unavailable:', error.code || error.name);
+    return res.status(503).json({ success: false, message: 'Stock page is temporarily unavailable. Please retry.' });
+  }
 };
