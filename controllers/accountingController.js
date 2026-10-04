@@ -1,9 +1,14 @@
 const { getPoolForTenant } = require("../config/db");
 const {
-  loadAccountingSnapshot,
+  executeAccountingSnapshot,
+  resolveCompanyStartDate,
+  pakistanToday,
   normalizePagination,
   resolveAuthenticatedCompanyCode,
 } = require("../services/accountingService");
+const { startJob, waitForJob, readPage } = require('../services/syncPageStore');
+const { promisify } = require('util');
+const gzip = promisify(require('zlib').gzip);
 
 exports.getAccountingRecords = async (req, res) => {
   try {
@@ -24,29 +29,30 @@ exports.getAccountingRecords = async (req, res) => {
       req.user?.companyCode,
       req.headers["x-company-code"],
     );
-    const { page, pageSize } = normalizePagination(req.query);
-    const { rows, fromDate, toDate } = await loadAccountingSnapshot({
-      pool,
-      tenantId,
-      userId,
-      companyCode,
-    });
-    const offset = (page - 1) * pageSize;
-    const data = rows.slice(offset, offset + pageSize);
+    const { page } = normalizePagination(req.query);
+    const fromDate = await resolveCompanyStartDate(pool, companyCode);
+    if (!fromDate) return res.status(422).json({ success: false, message: 'Company start date was not found in Defaults' });
+    const toDate = pakistanToday();
+    const options = { tenantId, userId, companyCode, fromDate, toDate };
+    const started = await startJob('accounting', options, async onBatch => ({
+      ...await executeAccountingSnapshot(pool, options, onBatch), fromDate, toDate,
+    }), page > 1);
+    const job = await waitForJob(started, tenantId, userId);
+    const batch = await readPage(job, page);
 
-    return res.status(200).json({
+    const payload = {
       success: true,
-      data,
-      count: data.length,
-      total: rows.length,
-      page,
-      pageSize,
-      hasMore: offset + data.length < rows.length,
+      ...batch,
       fromDate,
       toDate,
       companyCode,
       userId,
-    });
+    };
+    if (/\bgzip\b/i.test(String(req.headers['accept-encoding'] || ''))) {
+      res.set('Content-Encoding', 'gzip'); res.set('Content-Type', 'application/json'); res.set('Vary', 'Accept-Encoding');
+      return res.status(200).send(await gzip(Buffer.from(JSON.stringify(payload))));
+    }
+    return res.status(200).json(payload);
   } catch (error) {
     console.error("[Accounting] Sync failed", error?.message || error);
     const statusCode = error?.statusCode || 500;

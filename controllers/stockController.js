@@ -2,11 +2,9 @@ const zlib = require("zlib");
 const { promisify } = require("util");
 const {
   getStockSnapshot,
-  startStockSnapshotJob,
-  getStockSnapshotJob,
-  getStockSnapshotJobPage,
-  publicStockJob,
 } = require("../services/stockSnapshotService");
+const { findJob, readPage } = require("../services/syncPageStore");
+const { startStockJob, getStockJob } = require("../services/stockSyncJobs");
 
 const gzip = promisify(zlib.gzip);
 
@@ -60,9 +58,10 @@ function stockOptions(req) {
   };
 }
 
-exports.startSnapshotJob = (req, res) => {
+exports.startSnapshotJob = async (req, res) => {
   try {
-    const job = startStockSnapshotJob(stockOptions(req));
+    const options = stockOptions(req);
+    const job = await startStockJob(options);
     return res.status(job.status === "ready" ? 200 : 202).json({ success: true, ...job });
   } catch (error) {
     console.error("STOCK SNAPSHOT JOB START ERROR:", error?.message || error);
@@ -70,21 +69,26 @@ exports.startSnapshotJob = (req, res) => {
   }
 };
 
-exports.getSnapshotJobStatus = (req, res) => {
-  const job = getStockSnapshotJob(req.params.jobId, req.user.tenantId, req.user.userId);
+exports.getSnapshotJobStatus = async (req, res) => {
+  const job = await getStockJob(req.params.jobId, req.user.tenantId, req.user.userId);
   if (!job) return res.status(404).json({ success: false, message: "Stock sync job was not found" });
-  return res.json({ success: true, ...publicStockJob(job) });
+  return res.json({ success: true, ...job });
 };
 
-exports.getSnapshotJobPage = (req, res) => {
-  const job = getStockSnapshotJob(req.params.jobId, req.user.tenantId, req.user.userId);
+exports.getSnapshotJobPage = async (req, res) => {
+  const job = await findJob(req.params.jobId, req.user.tenantId, req.user.userId);
   if (!job) return res.status(404).json({ success: false, message: "Stock sync job was not found" });
   if (job.status === "failed") return res.status(503).json({ success: false, message: job.error });
   if (job.status !== "ready") return res.status(409).json({ success: false, message: "Stock sync is still processing" });
-  return res.json({
+  const payload = {
     success: true,
-    ...getStockSnapshotJobPage(job, req.query.page, req.query.pageSize),
-    sourceCount: job.snapshot.procedureRows,
+    ...await readPage(job, req.query.page),
+    sourceCount: job.sourceCount,
     generatedAt: job.generatedAt,
-  });
+  };
+  if (/\bgzip\b/i.test(String(req.headers['accept-encoding'] || ''))) {
+    res.set('Content-Encoding', 'gzip'); res.set('Content-Type', 'application/json'); res.set('Vary', 'Accept-Encoding');
+    return res.send(await gzip(Buffer.from(JSON.stringify(payload))));
+  }
+  return res.json(payload);
 };

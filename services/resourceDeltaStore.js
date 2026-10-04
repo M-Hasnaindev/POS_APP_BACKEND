@@ -10,7 +10,9 @@ async function pool() {
     const tenant = getTenantById(process.env.RESOURCE_SYNC_TENANT || "tenant_1");
     if (!tenant) throw new Error("Sync store connection tenant is unavailable");
     if (tenant.config.database.toLowerCase() === process.env.RESOURCE_SYNC_DATABASE.toLowerCase()) throw new Error("Sync store must be separate from POS database");
-    pendingPool = new sql.ConnectionPool({ ...tenant.config, database: process.env.RESOURCE_SYNC_DATABASE }).connect().catch(error => { pendingPool = null; throw error; });
+    const connection = new sql.ConnectionPool({ ...tenant.config, database: process.env.RESOURCE_SYNC_DATABASE });
+    connection.on('error', error => console.error('[SyncStore] Pool error:', error.code || error.name));
+    pendingPool = connection.connect().catch(error => { pendingPool = null; throw error; });
   }
   return pendingPool;
 }
@@ -137,4 +139,4 @@ async function changes(context, version, previous, cursor="") {
 }
 
 async function close() { const current=pendingPool;pendingPool=null;if(current)await(await current).close(); }
-module.exports={enabled,initialize,step,changes,contentRow,scopeKey,close};
+module.exports={enabled,initialize,step,changes,contentRow,scopeKey,close,pool};

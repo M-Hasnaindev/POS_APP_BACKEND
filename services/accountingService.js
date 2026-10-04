@@ -1,4 +1,5 @@
 const { sql } = require("../config/db");
+const { streamRows } = require("./streamRows");
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 3;
@@ -159,15 +160,16 @@ function trimCache() {
   }
 }
 
-async function executeAccountingSnapshot(pool, { fromDate, toDate, userId, companyCode }) {
+async function executeAccountingSnapshot(pool, { fromDate, toDate, userId, companyCode }, onBatch) {
   const request = pool.request();
-  request.timeout = 300000;
-  const result = await request
+  request.timeout = 240000;
+  request
     .input("fromDate", sql.VarChar(10), fromDate)
     .input("toDate", sql.VarChar(10), toDate)
     .input("userId", sql.VarChar(100), userId)
-    .input("companyCode", sql.VarChar(50), companyCode)
-    .query(ACC_PROC_SQL);
+    .input("companyCode", sql.VarChar(50), companyCode);
+  if (onBatch) return streamRows(request, () => request.query(ACC_PROC_SQL), onBatch);
+  const result = await request.query(ACC_PROC_SQL);
   return Array.isArray(result.recordset) ? result.recordset : [];
 }
 
@@ -211,6 +213,8 @@ function clearAccountingSnapshotCache() {
 }
 
 module.exports = {
+  executeAccountingSnapshot,
+  resolveCompanyStartDate,
   ACC_PROC_SQL,
   clearAccountingSnapshotCache,
   loadAccountingSnapshot,

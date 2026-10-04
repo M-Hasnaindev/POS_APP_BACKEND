@@ -7,6 +7,7 @@
 // ============================================
 
 const { sql, getPoolForTenant } = require("../config/db");
+const { sendSyncJson } = require('../services/syncResponse');
 
 function parseDateOnly(value, endOfDay = false) {
   if (!value) return null;
@@ -590,7 +591,7 @@ const getBarcodes = async (req, res) => {
     const connection = await getPoolForTenant(req.user.tenantId);
 
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const pageSize = Math.max(100, Math.min(parseInt(req.query.pageSize, 10) || 5000, 10000));
+    const pageSize = 5000;
     const offset = (page - 1) * pageSize;
 
     console.log(`📊 BARCODES API - Page: ${page}, Size: ${pageSize}`);
@@ -626,7 +627,7 @@ const getBarcodes = async (req, res) => {
 
     console.log("✅ Returned:", result.recordset.length, "/", total, "(LAST YEAR + CURRENT YEAR - 100K+ records)");
 
-    res.json({
+    await sendSyncJson(req, res, {
       success: true,
       data: result.recordset,
       pagination: {
@@ -659,7 +660,7 @@ const getBranchList = async (req, res) => {
 
     console.log("✅ BRANCH LIST returned:", result.recordset.length, "records");
 
-    res.json({ success: true, data: result.recordset, count: result.recordset.length });
+    await sendSyncJson(req, res, { success: true, data: result.recordset, count: result.recordset.length });
 
   } catch (error) {
     console.log("❌ BRANCH LIST ERROR:", error);
@@ -680,7 +681,7 @@ const getEmployeeView = async (req, res) => {
 
     console.log("✅ EMPLOYEE VIEW returned:", result.recordset.length, "records");
 
-    res.json({ success: true, data: result.recordset, count: result.recordset.length });
+    await sendSyncJson(req, res, { success: true, data: result.recordset, count: result.recordset.length });
 
   } catch (error) {
     console.log("❌ EMPLOYEE VIEW ERROR:", error);
@@ -716,7 +717,7 @@ const getAccountList = async (req, res) => {
     ]);
 
     const total = Number(countResult.recordset[0]?.total || 0);
-    res.json({
+    await sendSyncJson(req, res, {
       success: true,
       data: rowsResult.recordset,
       count: rowsResult.recordset.length,

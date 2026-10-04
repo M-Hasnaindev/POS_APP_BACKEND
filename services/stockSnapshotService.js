@@ -1,5 +1,6 @@
 const { sql, getPoolForTenant } = require("../config/db");
 const crypto = require("crypto");
+const { streamRows } = require("./streamRows");
 
 const STOCK_JOB_TTL_MS = 15 * 60 * 1000;
 const MAX_STOCK_JOBS = 4;
@@ -64,7 +65,7 @@ async function enrichProductNames(pool, rows) {
       MAX(NULLIF(LTRIM(RTRIM(CoBrandClassName)), '')) SupplierName,
       MAX(NULLIF(LTRIM(RTRIM(GenderName)), '')) GenderName
       FROM dbo.BarcodeView
-      WHERE LTRIM(RTRIM(BarCode)) IN (${parameters.join(",")})
+      WHERE BarCode IN (${parameters.join(",")})
       GROUP BY LTRIM(RTRIM(BarCode))`);
     for (const item of result.recordset || []) {
       productNames.set(String(item.BarCode || "").trim(), {
@@ -155,7 +156,7 @@ async function resolveCompanyCode(pool, { companyCode, requestedCompanyCode, use
   throw error;
 }
 
-async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, userId, fromDate, toDate }) {
+async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, userId, fromDate, toDate, branch = "", barcodeFrom = "", barcodeTo = "" }, onBatch) {
   const from = parseDateOnly(fromDate);
   const to = parseDateOnly(toDate);
   if (!from || !to || from > to) {
@@ -171,10 +172,10 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
     userId,
   });
   const request = pool.request();
-  request.timeout = 300000;
+  request.timeout = 240000;
   request
     .input("CompanyCode", sql.VarChar(6), effectiveCompanyCode)
-    .input("Branch", sql.NVarChar(sql.MAX), "")
+    .input("Branch", sql.NVarChar(sql.MAX), branch)
     .input("Store", sql.NVarChar(sql.MAX), "")
     .input("Startdate", sql.DateTime, from)
     .input("DateFrom", sql.DateTime, from)
@@ -187,30 +188,33 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
     .input("ReportName", sql.NVarChar(3), "004");
 
   STOCK_FILTERS.forEach((name) => request.input(name, sql.NVarChar(sql.MAX), ""));
-  const result = await request
+  request
     .input("Barcode", sql.NVarChar(sql.MAX), "")
     .input("Design", sql.NVarChar(sql.MAX), "")
     .input("IncludeZeroBal", sql.VarChar(1), "Y")
-    .input("BarCodeFr", sql.NVarChar(sql.MAX), "")
-    .input("BarCodeTo", sql.NVarChar(sql.MAX), "")
+    .input("BarCodeFr", sql.NVarChar(sql.MAX), barcodeFrom)
+    .input("BarCodeTo", sql.NVarChar(sql.MAX), barcodeTo)
     .input("RetailFr", sql.Float, 0)
     .input("RetailTo", sql.Float, 0)
-    .input("IsNonInventory", sql.NVarChar(1), "Y")
-    .execute("dbo.POSStockMovement");
+    .input("IsNonInventory", sql.NVarChar(1), "Y");
 
-  const rawRows = result.recordset || [];
-  const namedRows = await enrichBranchNames(pool, rawRows.filter(hasBusinessData), effectiveCompanyCode);
-  const rows = await enrichProductNames(pool, namedRows);
+  const rows = [];
+  const streamed = await streamRows(request, () => request.execute("dbo.POSStockMovement"), async batch => {
+    const named = await enrichBranchNames(pool, batch, effectiveCompanyCode);
+    const enriched = await enrichProductNames(pool, named);
+    if (onBatch) await onBatch(enriched);
+    else rows.push(...enriched);
+  }, hasBusinessData);
   console.log("[StockSnapshot] Completed", {
     tenantId,
     companyCode: effectiveCompanyCode,
     fromDate,
     toDate,
-    procedureRows: rawRows.length,
-    usefulRows: rows.length,
+    procedureRows: streamed.sourceCount,
+    usefulRows: streamed.count,
     durationMs: Date.now() - startedAt,
   });
-  return { rows, procedureRows: rawRows.length, durationMs: Date.now() - startedAt };
+  return { rows, procedureRows: streamed.sourceCount, sourceCount: streamed.sourceCount, count: streamed.count, durationMs: Date.now() - startedAt };
 }
 
 function pruneStockJobs() {
