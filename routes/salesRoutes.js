@@ -6,6 +6,7 @@ const {
   getBarcodes,
   getBranchList,
   getEmployeeView,
+  getAccountList,
 } = require("../controllers/salesController");
 const { verifyToken } = require("../middleware/authMiddleware");
 
@@ -16,6 +17,7 @@ router.get("/sales-report", getSalesReport);
 router.get("/barcodes", getBarcodes);
 router.get("/branch-list", getBranchList);
 router.get("/employee-view", getEmployeeView);
+router.get("/account-list", getAccountList);
 router.get("/sales-report-count", getSalesReportCount);
 router.get("/sales-report-all", getSalesReportAll);
 

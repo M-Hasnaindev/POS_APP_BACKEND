@@ -17,6 +17,7 @@ app.get("/", (_req, res) => {
       notifications: "/api/notifications",
       products: "/api/products",
       stock: "/api/stock",
+      accounting: "/api/accounting",
       resources: "/api/resources",
       intelligence: "/api/intelligence",
       versionUpdates: "/api/versionupdates",
@@ -41,6 +42,7 @@ const versionUpdateRoutes = require("./routes/versionUpdateRoutes");
 const stockRoutes = require("./routes/stockRoutes");
 const knowledgeRoutes = require("./routes/knowledgeRoutes");
 const intelligenceRoutes = require("./routes/intelligenceRoutes");
+const accountingRoutes = require("./routes/accountingRoutes");
 
 
 app.use("/api/auth", authRoutes);
@@ -49,6 +51,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/versionupdates", versionUpdateRoutes);
 app.use("/api/stock", stockRoutes);
+app.use("/api/accounting", accountingRoutes);
 app.use("/api/resources", knowledgeRoutes);
 app.use("/api/intelligence", intelligenceRoutes);
 

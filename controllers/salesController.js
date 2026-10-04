@@ -688,11 +688,57 @@ const getEmployeeView = async (req, res) => {
   }
 };
 
+// ============================================
+// 6. ACCOUNT LIST API - MASTER DATA (PAGINATED)
+// Config always downloads this table in 5,000-row batches.
+// ============================================
+const getAccountList = async (req, res) => {
+  try {
+    const connection = await getPoolForTenant(req.user.tenantId);
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const pageSize = 5000;
+    const offset = (page - 1) * pageSize;
+
+    console.log(`📊 ACCOUNT LIST API - Page: ${page}, Size: ${pageSize}`);
+
+    const [rowsResult, countResult] = await Promise.all([
+      connection.request()
+        .input("offset", sql.Int, offset)
+        .input("pageSize", sql.Int, pageSize)
+        .query(`
+          SELECT *
+          FROM AccountList
+          ORDER BY [ActCod], [AcName], [AcNature]
+          OFFSET @offset ROWS
+          FETCH NEXT @pageSize ROWS ONLY
+        `),
+      connection.request().query("SELECT COUNT(*) AS total FROM AccountList"),
+    ]);
+
+    const total = Number(countResult.recordset[0]?.total || 0);
+    res.json({
+      success: true,
+      data: rowsResult.recordset,
+      count: rowsResult.recordset.length,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
+      },
+    });
+  } catch (error) {
+    console.log("❌ ACCOUNT LIST ERROR:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 module.exports = {
   getSalesReport,
   getSalesReportAll,
   getSalesReportCount,
   getBarcodes,
   getBranchList,
-  getEmployeeView
+  getEmployeeView,
+  getAccountList,
 };

@@ -1,4 +1,11 @@
 const { sql, getPoolForTenant } = require("../config/db");
+const crypto = require("crypto");
+
+const STOCK_JOB_TTL_MS = 15 * 60 * 1000;
+const MAX_STOCK_JOBS = 4;
+const MAX_STOCK_PAGE_SIZE = 5000;
+const stockJobs = new Map();
+const stockJobIdsByKey = new Map();
 
 const STOCK_FILTERS = [
   "Brand", "CoBrand", "CoBrandClass", "Catagory", "SubCatagory", "Style",
@@ -206,6 +213,119 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
   return { rows, procedureRows: rawRows.length, durationMs: Date.now() - startedAt };
 }
 
+function pruneStockJobs() {
+  const now = Date.now();
+  for (const [jobId, job] of stockJobs.entries()) {
+    if (job.expiresAt <= now && job.status !== "processing") {
+      stockJobs.delete(jobId);
+      if (stockJobIdsByKey.get(job.key) === jobId) stockJobIdsByKey.delete(job.key);
+    }
+  }
+  const completed = [...stockJobs.values()]
+    .filter((job) => job.status !== "processing")
+    .sort((a, b) => a.createdAt - b.createdAt);
+  while (stockJobs.size > MAX_STOCK_JOBS && completed.length) {
+    const job = completed.shift();
+    stockJobs.delete(job.id);
+    if (stockJobIdsByKey.get(job.key) === job.id) stockJobIdsByKey.delete(job.key);
+  }
+}
+
+function stockJobOwnerMatches(job, tenantId, userId) {
+  return job.tenantId === String(tenantId || "").trim()
+    && job.userId === String(userId || "").trim();
+}
+
+function publicStockJob(job) {
+  return {
+    jobId: job.id,
+    status: job.status,
+    count: job.snapshot?.rows?.length || 0,
+    sourceCount: job.snapshot?.procedureRows || 0,
+    durationMs: job.snapshot?.durationMs || null,
+    generatedAt: job.generatedAt || null,
+    error: job.status === "failed" ? job.error : null,
+  };
+}
+
+function startStockSnapshotJob(options) {
+  pruneStockJobs();
+  const tenantId = String(options.tenantId || "").trim();
+  const userId = String(options.userId || "").trim();
+  const key = [
+    tenantId,
+    userId,
+    String(options.companyCode || options.requestedCompanyCode || "").trim(),
+    String(options.fromDate || "").trim(),
+    String(options.toDate || "").trim(),
+  ].join("|");
+  const existingId = stockJobIdsByKey.get(key);
+  const existing = existingId ? stockJobs.get(existingId) : null;
+  if (existing && existing.expiresAt > Date.now() && existing.status !== "failed") {
+    return publicStockJob(existing);
+  }
+
+  const job = {
+    id: crypto.randomUUID(),
+    key,
+    tenantId,
+    userId,
+    status: "processing",
+    snapshot: null,
+    error: null,
+    generatedAt: null,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + STOCK_JOB_TTL_MS,
+  };
+  stockJobs.set(job.id, job);
+  stockJobIdsByKey.set(key, job.id);
+
+  void getStockSnapshot(options)
+    .then((snapshot) => {
+      job.snapshot = snapshot;
+      job.status = "ready";
+      job.generatedAt = new Date().toISOString();
+      job.expiresAt = Date.now() + STOCK_JOB_TTL_MS;
+      pruneStockJobs();
+    })
+    .catch((error) => {
+      console.error("STOCK SNAPSHOT JOB ERROR:", error?.message || error);
+      job.status = "failed";
+      job.error = error?.code === "ETIMEOUT"
+        ? "Stock database took too long to respond. Please retry."
+        : error?.message || "Unable to prepare stock snapshot";
+      job.expiresAt = Date.now() + 60 * 1000;
+    });
+
+  return publicStockJob(job);
+}
+
+function getStockSnapshotJob(jobId, tenantId, userId) {
+  pruneStockJobs();
+  const job = stockJobs.get(String(jobId || ""));
+  if (!job || !stockJobOwnerMatches(job, tenantId, userId)) return null;
+  return job;
+}
+
+function getStockSnapshotJobPage(job, requestedPage, requestedPageSize) {
+  const page = Math.max(1, Number.parseInt(String(requestedPage || "1"), 10) || 1);
+  const pageSize = Math.max(
+    1,
+    Math.min(MAX_STOCK_PAGE_SIZE, Number.parseInt(String(requestedPageSize || "5000"), 10) || 5000),
+  );
+  const rows = job.snapshot?.rows || [];
+  const offset = (page - 1) * pageSize;
+  const data = rows.slice(offset, offset + pageSize);
+  return {
+    data,
+    count: data.length,
+    total: rows.length,
+    page,
+    pageSize,
+    hasMore: offset + data.length < rows.length,
+  };
+}
+
 module.exports = {
   getStockSnapshot,
   parseDateOnly,
@@ -215,4 +335,8 @@ module.exports = {
   // Retain the old export name for callers while adding gender enrichment.
   enrichSupplierNames: enrichProductNames,
   enrichBranchNames,
+  startStockSnapshotJob,
+  getStockSnapshotJob,
+  getStockSnapshotJobPage,
+  publicStockJob,
 };
