@@ -11,7 +11,7 @@ const ACC_PROC_SQL = `EXEC AccProc
   '',
   @fromDate,
   @toDate,
-  'L',
+  @reportType,
   'AL',
   @userId,
   '',
@@ -160,12 +160,13 @@ function trimCache() {
   }
 }
 
-async function executeAccountingSnapshot(pool, { fromDate, toDate, userId, companyCode }, onBatch) {
+async function executeAccountingSnapshot(pool, { fromDate, toDate, userId, companyCode, reportType = "L" }, onBatch) {
   const request = pool.request();
   request.timeout = 240000;
   request
     .input("fromDate", sql.VarChar(10), fromDate)
     .input("toDate", sql.VarChar(10), toDate)
+    .input("reportType", sql.VarChar(30), reportType)
     .input("userId", sql.VarChar(100), userId)
     .input("companyCode", sql.VarChar(50), companyCode);
   if (onBatch) return streamRows(request, () => request.query(ACC_PROC_SQL), onBatch);

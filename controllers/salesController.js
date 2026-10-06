@@ -3,7 +3,7 @@
 // ============================================
 // FIXES APPLIED:
 // 1. getSalesReport → COMPLETE LAST YEAR (12 MONTHS) instead of 2 months
-// 2. getBarcodes → LAST YEAR + CURRENT YEAR (100K+ records) instead of current year only
+// 2. getBarcodes → COMPLETE BarcodeView product master in 5,000-row pages
 // ============================================
 
 const { sql, getPoolForTenant } = require("../config/db");
@@ -15,6 +15,35 @@ function parseDateOnly(value, endOfDay = false) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
   const date = new Date(`${text}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}`);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function employeeImageBaseUrl(empBaseUrl, designBaseUrl) {
+  const explicit = String(empBaseUrl || "").trim();
+  if (/^https?:\/\//i.test(explicit)) return explicit;
+
+  // A few legacy companies saved employee filenames before EmpBaseURL was
+  // configured. Their DesignBaseURL still identifies the same ERP host.
+  const design = String(designBaseUrl || "").trim();
+  if (!/^https?:\/\//i.test(design)) return "";
+  try {
+    const url = new URL(design);
+    url.pathname = "/Content/Employees/";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function employeeImageUrl(imagePath, empBaseUrl, designBaseUrl) {
+  const path = String(imagePath || "").trim().replace(/^\/+/, "");
+  if (!path || !/\.(?:png|jpe?g|webp|gif|bmp)(?:\?.*)?$/i.test(path)) return "";
+  if (/^https?:\/\//i.test(String(imagePath || "").trim())) return String(imagePath).trim();
+  const base = employeeImageBaseUrl(empBaseUrl, designBaseUrl);
+  if (!base) return "";
+  const encodedPath = path.split("/").map((part) => encodeURIComponent(part)).join("/");
+  return `${base.endsWith("/") ? base : `${base}/`}${encodedPath}`;
 }
 
 // ============================================
@@ -582,9 +611,9 @@ SELECT
 };
 
 // ============================================
-// 3. BARCODES API - LAST YEAR + CURRENT YEAR - FIX APPLIED
-// FIX: Changed from current year only to LAST YEAR + CURRENT YEAR
-// Returns: 100K+ records properly
+// 3. BARCODES API - COMPLETE PRODUCT MASTER
+// BarcodeView is the product/design master, not a dated transaction table.
+// Filtering it by DesignDate leaves older-but-still-sold products unmapped.
 // ============================================
 const getBarcodes = async (req, res) => {
   try {
@@ -596,36 +625,27 @@ const getBarcodes = async (req, res) => {
 
     console.log(`📊 BARCODES API - Page: ${page}, Size: ${pageSize}`);
 
-    // FIX: Calculate last year for filtering
-    const currentYear = new Date().getFullYear();
-    const lastYear = currentYear - 1;
-
-    // ✅ Main Query - LAST YEAR + CURRENT YEAR (FIX APPLIED)
+    // Always return the full master in deterministic 5,000-row pages. This is
+    // intentionally tenant-generic and therefore works for every company.
     const result = await connection.request()
       .input("offset", offset)
       .input("pageSize", pageSize)
-      .input("lastYear", lastYear)
       .query(`
         SELECT *
         FROM BarcodeView
-        WHERE YEAR(DesignDate) >= @lastYear -- ✅ FIX: LAST YEAR + CURRENT YEAR (returns 100K+ records)
         ORDER BY Barcode, DesignNo, Color, Size, DesignDate
         OFFSET @offset ROWS
         FETCH NEXT @pageSize ROWS ONLY
       `);
 
-    // ✅ Total count - LAST YEAR + CURRENT YEAR (FIX APPLIED)
-    const countResult = await connection.request()
-      .input("lastYear", lastYear)
-      .query(`
-        SELECT COUNT(*) as total
-        FROM BarcodeView
-        WHERE YEAR(DesignDate) >= @lastYear -- ✅ FIX: LAST YEAR + CURRENT YEAR
-      `);
+    const countResult = await connection.request().query(`
+      SELECT COUNT(*) as total
+      FROM BarcodeView
+    `);
 
     const total = countResult.recordset[0].total;
 
-    console.log("✅ Returned:", result.recordset.length, "/", total, "(LAST YEAR + CURRENT YEAR - 100K+ records)");
+    console.log("✅ Returned:", result.recordset.length, "/", total, "(complete product master)");
 
     await sendSyncJson(req, res, {
       success: true,
@@ -677,11 +697,31 @@ const getEmployeeView = async (req, res) => {
     
     console.log("📊 EMPLOYEE VIEW API - Fetching...");
     
-    const result = await connection.request().query("SELECT * FROM Employee");
+    const companyCode = String(req.user?.companyCode || req.headers["x-company-code"] || "").trim();
+    const defaultsRequest = connection.request();
+    let defaultsQuery = "SELECT TOP 1 EmpBaseURL, DesignBaseURL FROM Defaults";
+    if (companyCode) {
+      defaultsRequest.input("companyCode", sql.VarChar(50), companyCode);
+      defaultsQuery += " WHERE LTRIM(RTRIM(CompanyID)) = LTRIM(RTRIM(@companyCode))";
+    }
+    const [result, defaultsResult] = await Promise.all([
+      connection.request().query("SELECT * FROM EmployeeView"),
+      defaultsRequest.query(defaultsQuery),
+    ]);
+    const defaults = defaultsResult.recordset?.[0] || {};
+    const records = (result.recordset || []).map((employee) => {
+      const rawImagePath = String(employee.BaseURL || "").trim()
+        || [String(employee.Code || "").trim(), String(employee.Tmp || "").trim()].filter(Boolean).join("/");
+      return {
+        ...employee,
+        EmployeeImagePath: rawImagePath,
+        BaseURL: employeeImageUrl(rawImagePath, defaults.EmpBaseURL, defaults.DesignBaseURL),
+      };
+    });
 
-    console.log("✅ EMPLOYEE VIEW returned:", result.recordset.length, "records");
+    console.log("✅ EMPLOYEE VIEW returned:", records.length, "records");
 
-    await sendSyncJson(req, res, { success: true, data: result.recordset, count: result.recordset.length });
+    await sendSyncJson(req, res, { success: true, data: records, count: records.length });
 
   } catch (error) {
     console.log("❌ EMPLOYEE VIEW ERROR:", error);
@@ -742,4 +782,6 @@ module.exports = {
   getBranchList,
   getEmployeeView,
   getAccountList,
+  employeeImageBaseUrl,
+  employeeImageUrl,
 };

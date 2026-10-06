@@ -1,4 +1,5 @@
 const assert = require("assert");
+const { employeeImageBaseUrl, employeeImageUrl } = require("../controllers/salesController");
 const {
   ACC_PROC_SQL,
   clearAccountingSnapshotCache,
@@ -17,12 +18,20 @@ assert.deepStrictEqual(normalizePagination({ page: "2", pageSize: "9000" }), {
   pageSize: 5000,
 });
 assert.strictEqual(pakistanToday(new Date("2026-10-01T20:00:00Z")), "2026-10-02");
+assert.strictEqual(
+  employeeImageBaseUrl("", "https://erp4.cherrystechnology.com:2033/Content/Design/"),
+  "https://erp4.cherrystechnology.com:2033/Content/Employees/",
+);
+assert.strictEqual(
+  employeeImageUrl("0000044/Babar Ali photo.jpeg", "https://erp.example/Content/Employees/", ""),
+  "https://erp.example/Content/Employees/0000044/Babar%20Ali%20photo.jpeg",
+);
 
 for (const required of [
   "EXEC AccProc",
   "@fromDate",
   "@toDate",
-  "'L'",
+  "@reportType",
   "'AL'",
   "@userId",
   "'ALL'",
@@ -116,6 +125,7 @@ for (const required of [
   assert.deepStrictEqual(calls[1].inputs.map(([name]) => name), [
     "fromDate",
     "toDate",
+    "reportType",
     "userId",
     "companyCode",
   ]);

@@ -284,7 +284,9 @@ ANSWER QUALITY CONTRACT:
 11. Treat follow-ups as part of one conversation: answer pronouns like "iska", "us branch", "phir kyun" from the supplied question context when the plan resolved them.
 12. Before returning, silently self-check every number and named entity against the digest/evidence. If evidence is insufficient or empty, say precisely what is unavailable and suggest a supported alternative question.
 
-Return JSON only: {"answer":"one concise client-facing summary sentence","highlights":["short evidence-backed bullet"],"actions":["specific evidence-backed action"],"suggestions":["natural follow-up question"],"confidence":"high|medium|low"}.`;
+13. Return exactly 3 useful follow-up questions that preserve the current period, filters and named entity. They must deepen the current topic (driver, comparison and action/risk) instead of switching to generic branch/product questions. Finance answers must suggest finance follow-ups; stock answers stock follow-ups; sales answers sales follow-ups.
+
+Return JSON only: {"answer":"one concise client-facing summary sentence","highlights":["short evidence-backed bullet"],"actions":["specific evidence-backed action"],"suggestions":["natural contextual follow-up question"],"confidence":"high|medium|low"}.`;
   let result;
   try {
     const content = await chat([
@@ -307,7 +309,10 @@ Return JSON only: {"answer":"one concise client-facing summary sentence","highli
   const suggestions = Array.isArray(deterministic.suggestions) ? deterministic.suggestions.map(String).filter(Boolean).slice(0, 3) : [];
   if (!suggestions.length && Array.isArray(result.suggestions)) suggestions.push(...result.suggestions.map(String).filter(Boolean).slice(0, 3));
   if (!suggestions.length) {
-    suggestions.push("Is result ko branch-wise compare karo", "Top aur bottom products ka detailed breakdown dikhao", "Isi scope ka stock aur movement impact samjhao");
+    const q = String(question || "").toLowerCase();
+    if (/cash|bank|account|expense|income|receiv|payable|asset|liabil|finance/.test(q)) suggestions.push("Isi period ka account-wise breakdown dikhao", "Previous equivalent period se compare karo", "Is position mein sab se bara financial risk aur action kya hai?");
+    else if (/stock|inventory|slow|dead|reorder|movement/.test(q)) suggestions.push("Isi scope ke fast aur slow movers compare karo", "Branch-wise stock exposure dikhao", "Is result se reorder ya clearance actions batao");
+    else suggestions.push("Isi result ke main drivers dikhao", "Previous equivalent period se compare karo", "Top aur bottom performers ke liye actions batao");
   }
   return {
     answer: String(result.answer || "Is sawal ka complete answer prepare nahi ho saka."),
