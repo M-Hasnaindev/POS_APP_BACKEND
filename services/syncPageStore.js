@@ -50,7 +50,10 @@ async function findJob(id, tenantId, userId) {
     .query(`SELECT * FROM dbo.AppSyncJob WHERE Id=@id AND TenantId=@tenant AND UserId=@user AND ExpiresAt>SYSUTCDATETIME()`);
   const row = result.recordset[0];
   if (!row) return null;
-  if (row.Status === 'processing' && Date.now() - new Date(row.UpdatedAt).getTime() > 290000) {
+  // ERP procedures may legitimately need several minutes before yielding the
+  // first 5,000-row batch. Do not misclassify that quiet preparation window as
+  // a failed job; clients poll the durable job and can safely resume it.
+  if (row.Status === 'processing' && Date.now() - new Date(row.UpdatedAt).getTime() > 900000) {
     row.Status = 'failed'; row.Error = 'Sync preparation timed out. Please retry.';
     await db.request().input('id', sql.UniqueIdentifier, id).query("UPDATE dbo.AppSyncJob SET Status='failed',Error='Sync preparation timed out. Please retry.' WHERE Id=@id AND Status='processing'");
   }
@@ -62,7 +65,7 @@ async function startJob(kind, options, run, reuseReady = false) {
   const scope = crypto.createHash('sha256').update(JSON.stringify([kind, options])).digest('hex');
   const id = crypto.randomUUID();
   const result = await db.request().input('id', sql.UniqueIdentifier, id).input('scope', sql.Char(64), scope)
-    .input('freshSeconds', sql.Int, reuseReady ? 7200 : kind.startsWith('stock') ? 900 : 300)
+    .input('freshSeconds', sql.Int, reuseReady ? 7200 : kind.startsWith('stock') ? 540 : 300)
     .input('tenant', sql.NVarChar(100), options.tenantId).input('user', sql.NVarChar(100), options.userId)
     .query(`SET XACT_ABORT ON; BEGIN TRAN;
       DECLARE @lock int;
@@ -71,7 +74,7 @@ async function startJob(kind, options, run, reuseReady = false) {
       DELETE TOP(5) FROM dbo.AppSyncJob WHERE ExpiresAt<SYSUTCDATETIME();
       DECLARE @existing uniqueidentifier;
       SELECT TOP(1) @existing=Id FROM dbo.AppSyncJob WHERE ScopeKey=@scope
-        AND ExpiresAt>SYSUTCDATETIME() AND ((Status='ready' AND UpdatedAt>DATEADD(second,-@freshSeconds,SYSUTCDATETIME())) OR (Status='processing' AND UpdatedAt>DATEADD(second,-290,SYSUTCDATETIME()))) ORDER BY CreatedAt DESC;
+        AND ExpiresAt>SYSUTCDATETIME() AND ((Status='ready' AND UpdatedAt>DATEADD(second,-@freshSeconds,SYSUTCDATETIME())) OR (Status='processing' AND UpdatedAt>DATEADD(second,-900,SYSUTCDATETIME()))) ORDER BY CreatedAt DESC;
       IF @existing IS NULL BEGIN
         INSERT dbo.AppSyncJob(Id,ScopeKey,TenantId,UserId,Status,ExpiresAt) VALUES(@id,@scope,@tenant,@user,'processing',DATEADD(hour,2,SYSUTCDATETIME()));
         SET @existing=@id;
@@ -152,7 +155,7 @@ async function failJob(jobId) {
 async function claimStep(jobId) {
   const db = await initialize();
   const result = await db.request().input('id', sql.UniqueIdentifier, jobId).query(`
-    UPDATE dbo.AppSyncJob SET LeaseUntil=DATEADD(second,270,SYSUTCDATETIME())
+    UPDATE dbo.AppSyncJob SET LeaseUntil=DATEADD(second,90,SYSUTCDATETIME())
     OUTPUT inserted.Id WHERE Id=@id AND Status='processing' AND
     (LeaseUntil IS NULL OR LeaseUntil<SYSUTCDATETIME());`);
   return result.recordset.length > 0;

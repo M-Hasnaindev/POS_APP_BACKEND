@@ -4,7 +4,21 @@ const { getStockSnapshot, resolveCompanyCode } = require('./stockSnapshotService
 const store = require('./syncPageStore');
 
 function publicStockJob(job) {
-  return { jobId: job.jobId, status: job.status, count: job.count, sourceCount: job.sourceCount, generatedAt: job.generatedAt, error: job.error };
+  const totalRanges = Number(job.metadata?.branches?.length || 0);
+  const completedRanges = job.status === 'ready'
+    ? totalRanges
+    : Number(job.metadata?.completedRanges || 0);
+  return {
+    jobId: job.jobId,
+    status: job.status,
+    count: job.count,
+    sourceCount: job.sourceCount,
+    generatedAt: job.generatedAt,
+    error: job.error,
+    phase: totalRanges ? 'ranges' : 'initializing',
+    completedRanges,
+    totalRanges,
+  };
 }
 function schedule(job) {
   // A transient polling/storage failure must not become an unhandled rejection
@@ -16,25 +30,11 @@ async function startStockJob(options) {
   const companyCode = await resolveCompanyCode(pool, options);
   const resolved = { ...options, companyCode };
   const job = await store.startJob('stock-ranges-v2', resolved, null);
-  if (job.status === 'processing' && !job.metadata.options && await store.claimStep(job.jobId)) {
-    // Partition the same BarcodeView used by the procedure. SQL collation and
-    // inclusive MIN/MAX boundaries ensure no overlaps and no skipped products.
-    // All branches/stores stay inside each partition, including historical ones.
-    // Transit-enabled reports seed products across every store. Other reports
-    // return only movements, so wider ranges avoid repeatedly scanning years
-    // of transactions for a handful of records.
-    const settings = await pool.request().input('company', sql.VarChar(6), companyCode)
-      .query("SELECT TOP(1) ISNULL(chkPOSInTransit,'N') transit, CASE WHEN OBJECT_DEFINITION(OBJECT_ID('dbo.POSStockMovement')) LIKE '%@Report7ZeroSeeds%' OR OBJECT_DEFINITION(OBJECT_ID('dbo.POSStockMovement')) IS NULL THEN 1 ELSE 0 END zeroSeeds FROM dbo.Defaults WHERE CompanyID=@company");
-    const rangeSize = String(settings.recordset[0]?.transit).trim() === 'Y' && settings.recordset[0]?.zeroSeeds !== 0 ? 2000 : 10000;
-    const ranges = await pool.request().input('rangeSize', sql.Int, rangeSize).query(`
-      WITH Codes AS (SELECT DISTINCT BarCode FROM dbo.BarcodeView WHERE BarCode IS NOT NULL),
-      Numbered AS (SELECT BarCode, (ROW_NUMBER() OVER(ORDER BY BarCode)-1)/@rangeSize AS Bucket FROM Codes)
-      SELECT MIN(BarCode) barcodeFrom,MAX(BarCode) barcodeTo FROM Numbered GROUP BY Bucket ORDER BY Bucket`);
-    job.metadata = { options: resolved, branches: ranges.recordset.map((_,i)=>String(i)), ranges: ranges.recordset, children: {} };
-    if (!ranges.recordset.length) {
-      await store.completeJob(job.jobId, 0, 0);
-      return publicStockJob(await store.findJob(job.jobId, options.tenantId, options.userId));
-    }
+  if (job.status === 'processing' && !job.metadata.options) {
+    // Persist only the lightweight job context in the request. Barcode range
+    // discovery can be expensive and belongs in the durable coordinator so
+    // mobile clients receive a pollable job id immediately.
+    job.metadata = { options: resolved, children: {}, completedRanges: 0, runningRanges: 0 };
     await store.saveMetadata(job.jobId, job.metadata);
   }
   if (job.status === 'processing') schedule(job);
@@ -52,6 +52,22 @@ async function advance(job) {
   if (!job || job.status !== 'processing') return;
   const metadata = { ...job.metadata, children: { ...job.metadata.children } };
   try {
+    if (!metadata.branches) {
+      const pool = await getPoolForTenant(metadata.options.tenantId);
+      const settings = await pool.request().input('company', sql.VarChar(6), metadata.options.companyCode)
+        .query("SELECT TOP(1) ISNULL(chkPOSInTransit,'N') transit, CASE WHEN OBJECT_DEFINITION(OBJECT_ID('dbo.POSStockMovement')) LIKE '%@Report7ZeroSeeds%' OR OBJECT_DEFINITION(OBJECT_ID('dbo.POSStockMovement')) IS NULL THEN 1 ELSE 0 END zeroSeeds FROM dbo.Defaults WHERE CompanyID=@company");
+      const rangeSize = String(settings.recordset[0]?.transit).trim() === 'Y' && settings.recordset[0]?.zeroSeeds !== 0 ? 2000 : 10000;
+      const ranges = await pool.request().input('rangeSize', sql.Int, rangeSize).query(`
+        WITH Codes AS (SELECT DISTINCT BarCode FROM dbo.BarcodeView WHERE BarCode IS NOT NULL),
+        Numbered AS (SELECT BarCode, (ROW_NUMBER() OVER(ORDER BY BarCode)-1)/@rangeSize AS Bucket FROM Codes)
+        SELECT MIN(BarCode) barcodeFrom,MAX(BarCode) barcodeTo FROM Numbered GROUP BY Bucket ORDER BY Bucket`);
+      metadata.branches = ranges.recordset.map((_, index) => String(index));
+      metadata.ranges = ranges.recordset;
+      if (!metadata.branches.length) {
+        await store.completeJob(job.jobId, 0, 0);
+        return;
+      }
+    }
     const children = new Map();
     await Promise.all(metadata.branches.map(async branch => {
       children.set(branch, metadata.children[branch] ? await store.findJob(metadata.children[branch], metadata.options.tenantId, metadata.options.userId) : null);
@@ -69,6 +85,8 @@ async function advance(job) {
         if (child.status === 'ready') ready.push(child); else running += 1;
       }
     }
+    metadata.completedRanges = ready.length;
+    metadata.runningRanges = running;
     if (ready.length === metadata.branches.length) {
       // Stitch final branch remainders into fixed 5,000-row download pages.
       let carry = [], page = 0, count = 0, source = 0;
