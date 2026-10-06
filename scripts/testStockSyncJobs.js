@@ -1,13 +1,13 @@
 const assert = require('node:assert/strict');
 const background = [];
 const jobs = new Map(), pages = new Map();
-let sequence = 0, peakRunning = 0, running = 0, fail = false;
+let sequence = 0, peakRunning = 0, running = 0, fail = false, selectedRangeSize = 0;
 const counts = [6501, 0, 2400, 5000, 1];
 const ranges = counts.map((_, i) => ({ barcodeFrom: String(i), barcodeTo: String(i) }));
 const copy = value => value && structuredClone(value);
 function mock(name, exports) { require.cache[require.resolve(name)] = { id: name, filename: name, loaded: true, exports }; }
 mock('@vercel/functions', { waitUntil: work => background.push(work) });
-mock('../config/db', { sql:{VarChar:()=>null,Int:null},getPoolForTenant: async () => ({ request: () => ({ input(){return this;},query: async text => ({ recordset: text.includes('dbo.Defaults')?[{transit:'Y',zeroSeeds:1}]:ranges }) }) }) });
+mock('../config/db', { sql:{VarChar:()=>null,Int:null},getPoolForTenant: async () => ({ request: () => ({ input(name,_type,value){if(name==='rangeSize')selectedRangeSize=value;return this;},query: async text => ({ recordset: text.includes('dbo.Defaults')?[{transit:'Y',zeroSeeds:1}]:ranges }) }) }) });
 mock('../services/stockSnapshotService', {
   resolveCompanyCode: async () => 'TEST',
   getStockSnapshot: async (options, sink) => {
@@ -55,12 +55,13 @@ async function drain() { while(background.length) await Promise.all(background.s
  const job=await getStockJob(first.jobId,options.tenantId,options.userId);
  assert.equal(job.status,'ready');assert.equal(job.count,13902);assert.equal(job.sourceCount,13952);
  const output=pages.get(first.jobId);assert.deepEqual(output.map(page=>page.length),[5000,5000,3902]);
- assert.equal(new Set(output.flat().map(row=>row.id)).size,13902);assert(peakRunning<=3);
+ assert.equal(selectedRangeSize,5000);
+ assert.equal(new Set(output.flat().map(row=>row.id)).size,13902);assert(peakRunning<=4);
  assert.equal(await getStockJob(first.jobId,'other-tenant',options.userId),null);
  assert.equal(await getStockJob(first.jobId,options.tenantId,'other-user'),null);
  fail=true;
  const broken=await startStockJob({...options,tenantId:'broken'});await drain();
  await getStockJob(broken.jobId,'broken',options.userId);await drain();
  assert.equal((await getStockJob(broken.jobId,'broken',options.userId)).status,'failed');
- console.log('PASS: concurrent start/polls, bounded workers, all-range merge, fixed 5000 pages, ownership, failures.');
+ console.log('PASS: concurrent start/polls, optimized 5000-barcode ranges, bounded workers, all-range merge, fixed 5000 pages, ownership, failures.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

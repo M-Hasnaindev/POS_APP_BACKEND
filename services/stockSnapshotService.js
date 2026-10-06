@@ -110,6 +110,66 @@ async function enrichBranchNames(pool, rows, companyCode) {
   });
 }
 
+async function loadStockEnrichment(pool, companyCode, barcodeFrom, barcodeTo) {
+  const branchRequest = pool.request()
+    .input("companyCode", sql.VarChar(6), String(companyCode || "").trim());
+  const productRequest = pool.request()
+    .input("barcodeFrom", sql.NVarChar(100), String(barcodeFrom || "").trim())
+    .input("barcodeTo", sql.NVarChar(100), String(barcodeTo || "").trim());
+
+  const [branchResult, productResult] = await Promise.all([
+    branchRequest.query(`SELECT LTRIM(RTRIM(BranchCode)) BranchCode,
+      MAX(NULLIF(LTRIM(RTRIM(BranchName)), '')) BranchName,
+      MAX(NULLIF(LTRIM(RTRIM(ShortName)), '')) ShortName
+      FROM dbo.BranchFile
+      WHERE LTRIM(RTRIM(CompanyCode))=@companyCode
+        AND NULLIF(LTRIM(RTRIM(BranchCode)), '') IS NOT NULL
+      GROUP BY LTRIM(RTRIM(BranchCode))`),
+    productRequest.query(`SELECT LTRIM(RTRIM(BarCode)) BarCode,
+      MAX(NULLIF(LTRIM(RTRIM(CoBrandClassName)), '')) SupplierName,
+      MAX(NULLIF(LTRIM(RTRIM(GenderName)), '')) GenderName
+      FROM dbo.BarcodeView
+      WHERE BarCode IS NOT NULL
+        AND (@barcodeFrom='' OR BarCode>=@barcodeFrom)
+        AND (@barcodeTo='' OR BarCode<=@barcodeTo)
+      GROUP BY LTRIM(RTRIM(BarCode))`),
+  ]);
+
+  return {
+    branchNames: new Map((branchResult.recordset || []).map((row) => {
+      const code = String(row.BranchCode || "").trim();
+      return [code, String(row.BranchName || row.ShortName || code).trim()];
+    })),
+    productNames: new Map((productResult.recordset || []).map((row) => [
+      String(row.BarCode || "").trim(),
+      {
+        supplier: String(row.SupplierName || "").trim(),
+        gender: String(row.GenderName || "").trim(),
+      },
+    ])),
+  };
+}
+
+function applyStockEnrichment(rows, enrichment) {
+  return rows.map((row) => {
+    const branchCode = String(row?.Branch || row?.BranchCode || "").trim();
+    const currentBranchName = String(row?.BranchName || "").trim();
+    const branchName = enrichment.branchNames.get(branchCode);
+    const barcode = String(row?.Barcode || row?.BarCode || "").trim();
+    const product = enrichment.productNames.get(barcode);
+    return {
+      ...row,
+      ...(branchName && (!currentBranchName || currentBranchName === branchCode)
+        ? { BranchName: branchName }
+        : {}),
+      ...(!supplierName(row) && product?.supplier ? { SupplierName: product.supplier } : {}),
+      ...(!String(row?.GenderName || row?.Gender || "").trim() && product?.gender
+        ? { GenderName: product.gender }
+        : {}),
+    };
+  });
+}
+
 async function resolveCompanyCode(pool, { companyCode, requestedCompanyCode, userId }) {
   const tokenCompany = String(companyCode || "").trim();
   if (tokenCompany) return tokenCompany;
@@ -171,6 +231,12 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
     requestedCompanyCode,
     userId,
   });
+  // Range jobs already know their barcode bounds. Resolve branch/product names
+  // once per range instead of issuing up to eight extra SQL queries for every
+  // streamed 5,000-row batch.
+  const enrichment = barcodeFrom || barcodeTo
+    ? await loadStockEnrichment(pool, effectiveCompanyCode, barcodeFrom, barcodeTo)
+    : null;
   const request = pool.request();
   request.timeout = 240000;
   request
@@ -200,8 +266,9 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
 
   const rows = [];
   const streamed = await streamRows(request, () => request.execute("dbo.POSStockMovement"), async batch => {
-    const named = await enrichBranchNames(pool, batch, effectiveCompanyCode);
-    const enriched = await enrichProductNames(pool, named);
+    const enriched = enrichment
+      ? applyStockEnrichment(batch, enrichment)
+      : await enrichProductNames(pool, await enrichBranchNames(pool, batch, effectiveCompanyCode));
     if (onBatch) await onBatch(enriched);
     else rows.push(...enriched);
   }, hasBusinessData);
@@ -339,6 +406,8 @@ module.exports = {
   // Retain the old export name for callers while adding gender enrichment.
   enrichSupplierNames: enrichProductNames,
   enrichBranchNames,
+  loadStockEnrichment,
+  applyStockEnrichment,
   startStockSnapshotJob,
   getStockSnapshotJob,
   getStockSnapshotJobPage,

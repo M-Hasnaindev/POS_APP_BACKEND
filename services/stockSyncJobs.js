@@ -3,6 +3,10 @@ const { sql, getPoolForTenant } = require('../config/db');
 const { getStockSnapshot, resolveCompanyCode } = require('./stockSnapshotService');
 const store = require('./syncPageStore');
 
+const TRANSIT_STOCK_RANGE_SIZE = 5000;
+const STANDARD_STOCK_RANGE_SIZE = 10000;
+const MAX_PARALLEL_STOCK_RANGES = 4;
+
 function publicStockJob(job) {
   const totalRanges = Number(job.metadata?.branches?.length || 0);
   const completedRanges = job.status === 'ready'
@@ -56,7 +60,9 @@ async function advance(job) {
       const pool = await getPoolForTenant(metadata.options.tenantId);
       const settings = await pool.request().input('company', sql.VarChar(6), metadata.options.companyCode)
         .query("SELECT TOP(1) ISNULL(chkPOSInTransit,'N') transit, CASE WHEN OBJECT_DEFINITION(OBJECT_ID('dbo.POSStockMovement')) LIKE '%@Report7ZeroSeeds%' OR OBJECT_DEFINITION(OBJECT_ID('dbo.POSStockMovement')) IS NULL THEN 1 ELSE 0 END zeroSeeds FROM dbo.Defaults WHERE CompanyID=@company");
-      const rangeSize = String(settings.recordset[0]?.transit).trim() === 'Y' && settings.recordset[0]?.zeroSeeds !== 0 ? 2000 : 10000;
+      const rangeSize = String(settings.recordset[0]?.transit).trim() === 'Y' && settings.recordset[0]?.zeroSeeds !== 0
+        ? TRANSIT_STOCK_RANGE_SIZE
+        : STANDARD_STOCK_RANGE_SIZE;
       const ranges = await pool.request().input('rangeSize', sql.Int, rangeSize).query(`
         WITH Codes AS (SELECT DISTINCT BarCode FROM dbo.BarcodeView WHERE BarCode IS NOT NULL),
         Numbered AS (SELECT BarCode, (ROW_NUMBER() OVER(ORDER BY BarCode)-1)/@rangeSize AS Bucket FROM Codes)
@@ -78,7 +84,7 @@ async function advance(job) {
       let child = children.get(branch);
       if (child?.status === 'failed') throw new Error(`Stock branch job failed: ${branch}`);
       if (child?.status === 'ready') ready.push(child);
-      if (!child && running < 3) {
+      if (!child && running < MAX_PARALLEL_STOCK_RANGES) {
         const options = { ...metadata.options, ...metadata.ranges[Number(branch)] };
         child = await store.startJob('stock-range-v1', options, onBatch => getStockSnapshot(options, onBatch));
         metadata.children[branch] = child.jobId;
