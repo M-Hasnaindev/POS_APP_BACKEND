@@ -1,8 +1,9 @@
 const crypto = require("crypto");
-const { sql } = require("../config/db");
+const { sql, isTransientDatabaseError } = require("../config/db");
 const { getTenantById } = require("../config/tenants");
 
 let pendingPool;
+const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 function enabled() { return Boolean(process.env.RESOURCE_SYNC_DATABASE); }
 async function pool() {
   if (!enabled()) throw Object.assign(new Error("Separate resource sync database is not configured"), { status: 503 });
@@ -10,9 +11,32 @@ async function pool() {
     const tenant = getTenantById(process.env.RESOURCE_SYNC_TENANT || "tenant_1");
     if (!tenant) throw new Error("Sync store connection tenant is unavailable");
     if (tenant.config.database.toLowerCase() === process.env.RESOURCE_SYNC_DATABASE.toLowerCase()) throw new Error("Sync store must be separate from POS database");
-    const connection = new sql.ConnectionPool({ ...tenant.config, database: process.env.RESOURCE_SYNC_DATABASE });
-    connection.on('error', error => console.error('[SyncStore] Pool error:', error.code || error.name));
-    pendingPool = connection.connect().catch(error => { pendingPool = null; throw error; });
+    let tracked;
+    const candidate = (async () => {
+      let lastError;
+      for (let attempt = 1; attempt <= 4; attempt += 1) {
+        const connection = new sql.ConnectionPool({ ...tenant.config, database: process.env.RESOURCE_SYNC_DATABASE });
+        connection.on('error', error => {
+          if (pendingPool === tracked) pendingPool = null;
+          const log = isTransientDatabaseError(error) ? console.warn : console.error;
+          log('[SyncStore] Pool connection reset:', error.code || error.name);
+          void connection.close().catch(() => undefined);
+        });
+        try {
+          return await connection.connect();
+        } catch (error) {
+          lastError = error;
+          await connection.close().catch(() => undefined);
+          if (!isTransientDatabaseError(error) || attempt === 4) throw error;
+          const delay = 750 * (2 ** (attempt - 1)) + Math.floor(Math.random() * 250);
+          console.warn(`[SyncStore] Temporary connection issue; retry ${attempt}/3 in ${delay}ms`);
+          await wait(delay);
+        }
+      }
+      throw lastError;
+    })();
+    tracked = candidate.catch(error => { if (pendingPool === tracked) pendingPool = null; throw error; });
+    pendingPool = tracked;
   }
   return pendingPool;
 }

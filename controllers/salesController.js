@@ -6,7 +6,7 @@
 // 2. getBarcodes → COMPLETE BarcodeView product master in 5,000-row pages
 // ============================================
 
-const { sql, getPoolForTenant } = require("../config/db");
+const { sql, getPoolForTenant, sendDatabaseError } = require("../config/db");
 const { sendSyncJson } = require('../services/syncResponse');
 
 function parseDateOnly(value, endOfDay = false) {
@@ -558,7 +558,7 @@ FETCH NEXT ${recordsPerPage + 1} ROWS ONLY
 
   } catch (error) {
     console.log("❌ SALES REPORT ALL ERROR:", error);
-    res.status(500).json({ success: false, error: error.message });
+    return sendDatabaseError(res, error, "Sales report could not be generated");
   }
 };
 

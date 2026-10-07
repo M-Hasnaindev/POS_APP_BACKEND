@@ -1,5 +1,5 @@
 const jwt = require("jsonwebtoken");
-const { sql, getPoolForTenant } = require("../config/db");
+const { sql, getPoolForTenant, sendDatabaseError } = require("../config/db");
 const { getTenantById } = require("../config/tenants");
 
 function resolveTenantId(req) {
@@ -78,9 +78,6 @@ exports.checkAppVersion = async (req, res) => {
     });
   } catch (err) {
     console.error("[VersionUpdates] App version check failed:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Unable to check the app version",
-    });
+    return sendDatabaseError(res, err, "Unable to check the app version");
   }
 };

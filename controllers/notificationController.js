@@ -1,5 +1,5 @@
 const crypto = require("crypto");
-const { sql, getPoolForTenant } = require("../config/db");
+const { sql, getPoolForTenant, sendDatabaseError } = require("../config/db");
 const { tenants } = require("../config/tenants");
 const { isDirectFcmToken, isFcmConfigured, sendFcmPush } = require("../services/fcmService");
 
@@ -581,7 +581,7 @@ exports.getRecentNotifications = async (req, res) => {
     });
   } catch (err) {
     console.error("RECENT NOTIFICATIONS ERROR:", err.message);
-    return res.status(500).json({ success: false, message: "Unable to load notifications" });
+    return sendDatabaseError(res, err, "Unable to load notifications");
   }
 };
 

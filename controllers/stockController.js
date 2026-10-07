@@ -5,6 +5,7 @@ const {
 } = require("../services/stockSnapshotService");
 const { findJob, readPage } = require("../services/syncPageStore");
 const { startStockJob, getStockJob } = require("../services/stockSyncJobs");
+const { isTransientDatabaseError } = require("../config/db");
 
 const gzip = promisify(zlib.gzip);
 
@@ -76,8 +77,10 @@ exports.getSnapshotJobStatus = async (req, res) => {
   if (!job) return res.status(404).json({ success: false, message: "Stock sync job was not found" });
   return res.json({ success: true, ...job });
   } catch (error) {
-    console.error('[StockSync] Status unavailable:', error.code || error.name);
-    return res.status(503).json({ success: false, message: 'Stock status is temporarily unavailable. Please retry.' });
+    const log = isTransientDatabaseError(error) ? console.warn : console.error;
+    log('[StockSync] Status temporarily unavailable:', error.code || error.name);
+    res.set('Retry-After', '3');
+    return res.status(503).json({ success: false, code: 'STOCK_STATUS_TEMPORARILY_UNAVAILABLE', retryable: true, message: 'Stock status is temporarily unavailable. Please retry.' });
   }
 };
 
