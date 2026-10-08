@@ -5,6 +5,7 @@ const router = express.Router();
 router.use(verifyToken);
 router.post("/plan", controller.plan);
 router.post("/explain", controller.explain);
+router.post("/forecast/charts", controller.forecastCharts);
 router.post("/repair", controller.repair);
 router.get("/reports", controller.catalog);
 router.post("/reports/plan", controller.reportPlan);

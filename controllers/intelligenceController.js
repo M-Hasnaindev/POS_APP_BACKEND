@@ -26,6 +26,11 @@ exports.catalog = (_req, res) => {
   return res.json({ success: true, ...value });
 };
 
+exports.forecastCharts = async (req,res) => {
+  try { return res.json({success:true,...await service.forecastCharts(req.body)}); }
+  catch(error) { return res.status(error.status || 503).json({success:false,message:error.status===400 ? error.message : 'AI forecast is currently unavailable. Please retry.'}); }
+};
+
 exports.reportPlan = async (req, res) => {
   try { return res.json({ success: true, ...(await service.createReportPlan(await bodyWithPermissions(req))) }); }
   catch (error) { console.error("REPORT PLAN ERROR:", error.message); return res.status(error.status || 500).json({ success: false, message: error.message || "Unable to generate this report" }); }
