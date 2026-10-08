@@ -9,6 +9,9 @@ const {
 const { verifyToken } = require("../middleware/authMiddleware");
 
 const router = express.Router();
+const reportController = require('../controllers/accountingController');
+router.get('/report-options', verifyToken, reportController.getReportOptions);
+router.post('/reports/:reportType', verifyToken, reportController.generateReport);
 
 router.get("/records", verifyToken, getAccountingRecords);
 router.post("/records/jobs", verifyToken, startAccountingRecordsJob);
