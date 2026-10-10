@@ -9,35 +9,6 @@ const {
 const { startJob, waitForJob, readPage, findJob } = require('../services/syncPageStore');
 const { promisify } = require('util');
 const gzip = promisify(require('zlib').gzip);
-const accountingReports = require('../services/accountingReports');
-
-async function reportContext(req) {
-  const tenantId=String(req.user?.tenantId||'').trim(), userId=String(req.user?.userId||'').trim();
-  if(!tenantId||!userId)throw Object.assign(new Error('Please sign in again'),{statusCode:401});
-  const pool=await getPoolForTenant(tenantId);
-  const companyCode=await resolveAuthenticatedCompanyCode(pool,userId,req.user?.companyCode,req.headers['x-company-code']);
-  const fromDate=await resolveCompanyStartDate(pool,companyCode);
-  if(!accountingReports.validDate(fromDate))throw Object.assign(new Error('Company start date is unavailable in Defaults'),{statusCode:422});
-  return {pool,tenantId,userId,companyCode,fromDate,toDate:pakistanToday()};
-}
-exports.getReportOptions=async(req,res)=>{
-  try {
-    const context=await reportContext(req);
-    const meta=await accountingReports.metadata(context.pool,context);
-    res.json({success:true,fromDate:context.fromDate,toDate:context.toDate,branches:meta.branches,accounts:meta.accounts.map(({raw,...account})=>account)});
-  } catch(error){res.status(error.statusCode||500).json({success:false,message:error.statusCode?error.message:'Unable to load report options'});}
-};
-exports.generateReport=async(req,res)=>{
-  try {
-    const context=await reportContext(req);
-    const input=req.body||{};
-    if(!accountingReports.validDate(input.fromDate)||!accountingReports.validDate(input.toDate)||input.fromDate<context.fromDate||input.toDate>context.toDate) return res.status(422).json({success:false,message:'Dates must be within the company reporting period'});
-    const meta=await accountingReports.metadata(context.pool,context);
-    const result=await accountingReports.runReport(context.pool,context,String(req.params.reportType),input,meta);
-    res.json({success:true,...result,reportType:req.params.reportType,fromDate:input.fromDate,toDate:input.toDate,companyCode:context.companyCode,count:result.data.length});
-  }catch(error){res.status(error.statusCode||500).json({success:false,message:error.statusCode?error.message:'Unable to generate this report. Please retry with a shorter period.'});}
-};
-
 exports.getAccountingRecords = async (req, res) => {
   try {
     const tenantId = String(req.user?.tenantId || "").trim();
@@ -179,67 +150,5 @@ exports.getAccountingRecordsJobPage = async (req, res) => {
   } catch (error) {
     console.error('[Accounting] Job page failed', error?.code || error?.name);
     return res.status(503).json({ success: false, message: 'Accounting page is temporarily unavailable. Please retry.' });
-  }
-};
-
-const REPORT_TYPES = new Set([
-  "accounting-ledger", "trial-balance", "income-statement", "balance-sheet",
-  "audit-trial", "trial-balance-six-column", "account-movement",
-  "month-wise-account", "month-wise-expense", "month-wise-cash-bank",
-  "daily-cash-bank-flow", "party-wise-collection", "party-wise-payment",
-  "chart-of-accounts", "post-dated-cheques", "receivable-aging",
-  "payable-aging", "cash-bank-position",
-]);
-
-// Verified against the report modes supported by AccProc in the tenant ERP.
-// Keeping this mapping server-side prevents arbitrary procedure modes from
-// being supplied by a mobile client.
-const ACC_PROC_REPORT_TYPES = Object.freeze({
-  "accounting-ledger": "L",
-  "trial-balance": "T",
-  "income-statement": "I",
-  "balance-sheet": "B",
-  "audit-trial": "A",
-  "trial-balance-six-column": "T",
-  "account-movement": "LSUM",
-  "month-wise-account": "MWR",
-  "month-wise-expense": "BREXP",
-  "month-wise-cash-bank": "BRANCHDCASH",
-  "daily-cash-bank-flow": "DAILYCASH",
-  "party-wise-collection": "PWC",
-  "party-wise-payment": "PWP",
-  "chart-of-accounts": "T",
-  "post-dated-cheques": "PCHQLST",
-  "receivable-aging": "AGING",
-  "payable-aging": "AGINGWOOP",
-  "cash-bank-position": "BRANCHDCASH",
-});
-
-// Finance reports intentionally execute AccProc live. They do not read the
-// mobile ledger cache, so a user always receives the ERP's current figures.
-exports.getLiveAccountingReport = async (req, res) => {
-  try {
-    const tenantId = String(req.user?.tenantId || "").trim();
-    const userId = String(req.user?.userId || "").trim();
-    const reportType = String(req.params.reportType || "").trim().toLowerCase();
-    if (!tenantId || !userId) return res.status(401).json({ success: false, message: "Authenticated tenant and user are required" });
-    if (!REPORT_TYPES.has(reportType)) return res.status(400).json({ success: false, message: "Unsupported accounting report" });
-
-    const pool = await getPoolForTenant(tenantId);
-    const companyCode = await resolveAuthenticatedCompanyCode(pool, userId, req.user?.companyCode, req.headers["x-company-code"]);
-    const companyFromDate = await resolveCompanyStartDate(pool, companyCode);
-    const today = pakistanToday();
-    const requestedFrom = String(req.query.fromDate || "").slice(0, 10);
-    const requestedTo = String(req.query.toDate || "").slice(0, 10);
-    const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedFrom) && requestedFrom >= companyFromDate ? requestedFrom : companyFromDate;
-    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedTo) && requestedTo <= today ? requestedTo : today;
-    if (fromDate > toDate) return res.status(422).json({ success: false, message: "From date cannot be after to date" });
-
-    const procedureReportType = ACC_PROC_REPORT_TYPES[reportType];
-    const rows = await executeAccountingSnapshot(pool, { fromDate, toDate, userId, companyCode, reportType: procedureReportType });
-    return res.json({ success: true, reportType, procedureReportType, fromDate, toDate, companyCode, count: rows.length, data: rows });
-  } catch (error) {
-    console.error("[Accounting] Live report failed", error?.message || error);
-    return res.status(error?.statusCode || 500).json({ success: false, message: error?.statusCode ? error.message : "Unable to generate accounting report" });
   }
 };

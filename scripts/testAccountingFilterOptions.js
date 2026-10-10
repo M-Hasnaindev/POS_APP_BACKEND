@@ -1,0 +1,13 @@
+const assert=require('node:assert/strict');
+const {lookupPlan}=require('../services/accountingFilterOptions');
+const scoped=lookupPlan('AccountList',['ActCod','ActName','CompanyCode','Password','AcNature','Parent'].map(name=>({name})),'UR');
+assert(scoped.query.includes('[CompanyCode]))=@companyCode'));
+assert(scoped.query.includes("[ActCod] <> '0'"));
+assert(!scoped.query.includes('Password'));
+assert(scoped.query.includes('[AcNature]'));
+assert.equal(scoped.companyScoped,true);
+const tenant=lookupPlan('BranchList',[{name:'BranchCode'},{name:'BranchName'}],'UR');
+assert.equal(tenant.companyScoped,false);
+assert(!tenant.query.includes('WHERE'));
+assert.throws(()=>lookupPlan('AccountList',[{name:'Name'}],'UR'),/identifier/);
+console.log('PASS accounting filter metadata: available company columns bound, tenant master fallback explicit, private columns excluded, required identifier checked');

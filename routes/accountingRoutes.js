@@ -1,7 +1,6 @@
 const express = require("express");
 const {
   getAccountingRecords,
-  getLiveAccountingReport,
   startAccountingRecordsJob,
   getAccountingRecordsJobStatus,
   getAccountingRecordsJobPage,
@@ -9,14 +8,14 @@ const {
 const { verifyToken } = require("../middleware/authMiddleware");
 
 const router = express.Router();
-const reportController = require('../controllers/accountingController');
-router.get('/report-options', verifyToken, reportController.getReportOptions);
-router.post('/reports/:reportType', verifyToken, reportController.generateReport);
+const { getAccountingFilterOptions } = require("../controllers/accountingFilterOptionsController");
+router.get("/filter-options", verifyToken, getAccountingFilterOptions);
+const { generateAccountingReport } = require("../controllers/accountingReportsController");
+router.post("/reports", verifyToken, generateAccountingReport);
 
 router.get("/records", verifyToken, getAccountingRecords);
 router.post("/records/jobs", verifyToken, startAccountingRecordsJob);
 router.get("/records/jobs/:jobId", verifyToken, getAccountingRecordsJobStatus);
 router.get("/records/jobs/:jobId/pages", verifyToken, getAccountingRecordsJobPage);
-router.get("/reports/:reportType", verifyToken, getLiveAccountingReport);
 
 module.exports = router;

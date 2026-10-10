@@ -1,0 +1,33 @@
+const assert = require('node:assert/strict');
+const { forecastCharts } = require('../services/intelligenceService');
+const originalFetch = global.fetch;
+const originalKey = process.env.OLLAMA_API_KEY;
+const originalModels = process.env.OLLAMA_MODEL_CANDIDATES;
+process.env.OLLAMA_API_KEY = 'test-only';
+process.env.OLLAMA_MODEL_CANDIDATES = '';
+const payload = { mode: 'sales', series: [{ id: 'trend', period: 'current full day', history: [[-10, 20, 0], [-20, 40, 0]] }] };
+(async () => {
+  global.fetch = async () => ({ok:true, json:async()=>({message:{content:JSON.stringify({series:[{id:'trend',method:'mean'}]})}})});
+  const ai = await forecastCharts(payload);
+  assert.equal(ai.source, 'ai');
+  assert.deepEqual(ai.series[0].values, [-15, 30, 0]);
+  global.fetch = async () => { throw new Error('network down'); };
+  const fallback = await forecastCharts(payload);
+  assert.equal(fallback.source, 'statistical');
+  assert.match(fallback.notice, /estimate/);
+  assert.deepEqual(fallback.series[0].values, [-16.67, 33.33, 0]);
+  global.fetch = async () => ({ok:true,json:async()=>({message:{content:'{"series":[null]}'}})});
+  assert.equal((await forecastCharts(payload)).source, 'statistical');
+  global.fetch = async () => ({ok:true,json:async()=>({message:{content:'invalid json'}})});
+  assert.equal((await forecastCharts(payload)).source, 'statistical');
+  const returns = await forecastCharts({...payload,mode:'returns'});
+  assert.deepEqual(returns.series[0].values, [0,33.33,0]);
+  await assert.rejects(forecastCharts({...payload,mode:'unknown'}), /Invalid forecast metric/);
+  await assert.rejects(forecastCharts({mode:'sales',series:[{id:'trend',history:[[1]]}]}), /two historical/);
+  await assert.rejects(forecastCharts({mode:'sales',series:[{id:'trend',history:[[1],[Infinity]]}]}), /Invalid historical/);
+  console.log('Sales chart forecast: AI selection, signed net sales, fallback, malformed responses, returns and input validation passed.');
+})().finally(() => {
+  global.fetch = originalFetch;
+  if(originalKey === undefined) delete process.env.OLLAMA_API_KEY; else process.env.OLLAMA_API_KEY = originalKey;
+  if(originalModels === undefined) delete process.env.OLLAMA_MODEL_CANDIDATES; else process.env.OLLAMA_MODEL_CANDIDATES = originalModels;
+}).catch(error=>{ console.error(error); process.exitCode=1; });
