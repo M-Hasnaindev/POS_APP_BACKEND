@@ -1,0 +1,33 @@
+const assert = require('node:assert/strict');
+const {createAppDetails} = require('../services/adminAppDetails');
+(async () => {
+  process.env.DB_PASSWORD = 'local-secret';
+  const calls = [], audits = [];
+  const apps = {get:async id => {if(!['pos','attendance'].includes(id))throw Error('not found');return {id,name:'Attendance',baseUrl:'https://attendance.example.com'};}};
+  const store = {audit:async (...args)=>audits.push(args),restrictions:async()=>[{scope:'user',restricted:true}]};
+  const dir = {environment:()=>['DB_PASSWORD'],masked:()=> '••••••••',tenants:[{id:'one'}]};
+  const remote = async (app,path,body) => {
+    calls.push({id:app.id,path,body});
+    if(path.endsWith('/info'))return {info:{name:'wrong',apiUrl:'wrong',backendVersion:'2',releases:[]}};
+    if(path.endsWith('/overview'))return {overview:{tenantCount:5}};
+    if(path.endsWith('/download'))return {content:'DB_PASSWORD=remote-secret\n'};
+    if(path.endsWith('/reveal'))return {variables:[{name:'DB_PASSWORD',value:'remote-secret'}]};
+    return {variables:[{name:'DB_PASSWORD',value:'accidental-plaintext',configured:true}]};
+  };
+  const service = createAppDetails(apps,store,dir,remote,async()=>[]);
+  assert.equal((await service.info('attendance')).apiUrl,'https://attendance.example.com/api');
+  assert.equal((await service.info('attendance')).name,'Attendance');
+  assert.equal((await service.info('pos')).id,'pos');
+  assert.equal((await service.environment('attendance'))[0].value,'••••••••');
+  assert.equal((await service.reveal('attendance',['DB_PASSWORD'],'admin'))[0].value,'remote-secret');
+  assert.equal((await service.reveal('pos',['DB_PASSWORD'],'admin'))[0].value,'local-secret');
+  await assert.rejects(()=>service.reveal('attendance',['VERCEL_TOKEN'],'admin'));
+  await assert.rejects(()=>service.info('missing'));
+  assert.match(await service.download('attendance','admin'),/remote-secret/);
+  assert.match(await service.download('pos','admin'),/local-secret/);
+  assert.equal((await service.overview('attendance')).tenantCount,5);
+  assert.equal((await service.overview('pos')).restrictedUsers,1);
+  assert.equal(calls.every(c=>c.id==='attendance'),true);
+  assert.equal(audits.some(a=>a[2].includes('remote-secret')),false);
+  console.log('Selected-app metadata/environment isolation tests passed.');
+})().catch(e=>{console.error(e);process.exitCode=1;});

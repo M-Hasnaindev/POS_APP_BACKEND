@@ -16,6 +16,7 @@ const uuid = (value) => {
 function createAdminRouter(store = adminStore, dir = directory) {
   const router = express.Router();
   const apps = require('../services/adminApps').createApps(store, dir);
+  const appDetails = require('../services/adminAppDetails').createAppDetails(apps, store, dir);
   router.use((req, res, next) => {
     res.set({
       "Cache-Control": "no-store",
@@ -51,6 +52,18 @@ function createAdminRouter(store = adminStore, dir = directory) {
     }),
   );
   router.get('/apps', async (req,res)=>res.json({success:true,apps:await apps.list()}));
+  router.get('/apps/:id/info', async (req,res)=>res.json({success:true,info:await appDetails.info(req.params.id)}));
+  router.get('/apps/:id/overview', async (req,res)=>res.json({success:true,overview:await appDetails.overview(req.params.id)}));
+  router.get('/apps/:id/environment', async (req,res)=>res.json({success:true,variables:await appDetails.environment(req.params.id)}));
+  router.post('/apps/:id/environment/reveal', async (req,res)=>{
+    await auth.password(req,store);
+    res.json({success:true,variables:await appDetails.reveal(req.params.id,req.body.names,req.admin.email)});
+  });
+  router.post('/apps/:id/environment/download', async (req,res)=>{
+    await auth.password(req,store);
+    const content = await appDetails.download(req.params.id,req.admin.email);
+    res.set({'Content-Type':'text/plain; charset=utf-8','Content-Disposition':`attachment; filename="${req.params.id}-environment.env"`}).send(content);
+  });
   router.post('/apps', async (req,res)=>{
     await auth.password(req,store);
     res.status(201).json({success:true,app:await apps.save(req.body,req.admin.email)});

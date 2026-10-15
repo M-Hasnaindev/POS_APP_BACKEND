@@ -69,6 +69,7 @@ process.env.TEST_APP_VALUE = "test-only";
   }
   try {
     assert.equal((await req("/overview")).status, 401);
+    assert.equal((await req('/apps/pos/environment')).status, 401);
     assert.equal(
       (
         await req("/login", "POST", {
@@ -100,6 +101,17 @@ process.env.TEST_APP_VALUE = "test-only";
     assert.match(r.headers.get("set-cookie"), /HttpOnly/);
     assert.match(r.headers.get("set-cookie"), /Path=\/api\/admin/);
     csrf = (await r.json()).csrfToken;
+    const scopedHeaders = {Origin:'http://localhost:5173','X-CSRF-Token':csrf};
+    const maskedEnv = await (await req('/apps/pos/environment')).json();
+    assert.equal(maskedEnv.variables[0].value,'masked');
+    assert.equal((await req('/apps/pos/environment/reveal','POST',{names:['TEST_APP_VALUE'],password:'wrong'},scopedHeaders)).status,401);
+    assert.equal((await req('/apps/pos/environment/reveal','POST',{names:['ADMIN_SESSION_SECRET'],password:'test-password'},scopedHeaders)).status,400);
+    const revealedEnv = await (await req('/apps/pos/environment/reveal','POST',{names:['TEST_APP_VALUE'],password:'test-password'},scopedHeaders)).json();
+    assert.equal(revealedEnv.variables[0].value,'test-only');
+    assert.equal((await req('/apps/pos/environment/download','POST',{password:'test-password'},{Origin:'http://localhost:5173'})).status,403);
+    const exportedEnv = await req('/apps/pos/environment/download','POST',{password:'test-password'},scopedHeaders);
+    assert.match(exportedEnv.headers.get('content-disposition'),/pos-environment.env/);
+    assert.match(await exportedEnv.text(),/TEST_APP_VALUE/);
     assert.equal((await req("/overview")).status, 200);
     assert.equal(
       (await req("/logout", "POST", {}, { Origin: "http://localhost:5173" }))

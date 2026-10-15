@@ -13,7 +13,7 @@
     "test:ai": "node scripts/testSalesStockQuestionCorpus.js && node scripts/testExistingDataPlan.js && node scripts/testAssistantIntent.js && node scripts/testEvidenceAnalysis.js && node scripts/testSalesSemanticCompiler.js && node scripts/testForecastSemanticCompiler.js && node scripts/testPurchaseSemanticCompiler.js && node scripts/testLiveReportSecurity.js && node scripts/testAccountingSync.js",
     "test": "npm run test:push",
     "admin:setup": "node scripts/setupAdmin.js",
-    "test:admin": "node scripts/testAdminSecurity.js && node scripts/testAdminStore.js && node scripts/testAdminPushAccess.js && node scripts/testAdminEnvironment.js && node scripts/testAdminApps.js && node scripts/testAccessRecovery.js"
+    "test:admin": "node scripts/testAdminSecurity.js && node scripts/testAdminStore.js && node scripts/testAdminPushAccess.js && node scripts/testAdminEnvironment.js && node scripts/testAdminApps.js && node scripts/testAdminAppDetails.js && node scripts/testAccessRecovery.js"
   },
   "keywords": [],
   "author": "",
