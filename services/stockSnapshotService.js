@@ -18,6 +18,10 @@ const STOCK_FILTERS = [
 const MOVEMENT_FIELDS = [
   "OpQty", "PurchaseQty", "PurchaseRQty", "StockRCQty", "StockIssQty",
   "SalesQty", "StockADJQty", "BalQty", "InTransitQty", "TotalQty",
+  // Value-only adjustments remain financial data even when quantities net to zero.
+  // Do not include unit prices: zero-activity seed rows can still have list prices.
+  "OpAmt", "PurchaseAmt", "PurchaseRAmt", "StockRCAmt", "StockIssAmt",
+  "SalesAmt", "StockADJAmt", "BalAmt", "InTransitAmt",
 ];
 
 function parseDateOnly(value) {
