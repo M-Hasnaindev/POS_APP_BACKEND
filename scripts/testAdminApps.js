@@ -1,0 +1,27 @@
+const assert=require('node:assert/strict');
+const {createApps,publicAddress,validateUrl,encrypt,decrypt,safe}=require('../services/adminApps');
+process.env.ADMIN_CONNECTOR_ENCRYPTION_KEY='a'.repeat(64);
+(async()=>{
+  for(const ip of ['127.0.0.1','10.0.0.1','172.16.0.1','169.254.169.254','192.168.1.1','100.64.0.1','::1','::ffff:8.8.8.8','198.18.0.1'])assert.equal(publicAddress(ip),false,ip);
+  assert.equal(publicAddress('8.8.8.8'),true);
+  for(const url of ['http://example.com','https://localhost','https://127.0.0.1','https://example.com:444','https://name:pass@example.com','https://example.com/?secret=x'])assert.throws(()=>validateUrl(url));
+  const secret='s'.repeat(40),cipher=encrypt(secret,'attendance');
+  assert.equal(decrypt(cipher,'attendance'),secret);
+  assert.throws(()=>decrypt(cipher,'other'));
+  assert.equal(JSON.stringify(safe({id:'attendance',secretCipher:cipher})).includes(cipher),false);
+  const apps=[],calls=[],audits=[];
+  const store={apps:async()=>apps,saveApp:async app=>apps.push(app),audit:async(...a)=>audits.push(a)};
+  const remote=async(app,path,body)=>{calls.push({appId:app.id,path,body});return path.endsWith('/users')?{success:true,users:[{id:'e1',name:'Employee',restricted:true,reason:'test'}]}:body?{success:true}:{success:true,companies:[{id:'t1',name:'Company',tenantKey:'secret-key',restricted:false}]};};
+  const registry=createApps(store,{tenants:[],tenantSummary:x=>x},remote);
+  const created=await registry.save({id:'attendance',name:'Attendance',baseUrl:'https://attendance.example.com',connectorSecret:secret},'admin');
+  assert.equal(created.secretConfigured,true);assert.equal(created.secretCipher,undefined);
+  assert.equal((await registry.list()).length,2);
+  assert.equal(JSON.stringify(await registry.tenants('attendance')).includes('secret-key'),false);
+  const detail=await registry.detail('attendance','t1');assert.equal(detail.users[0].userId,'e1');assert.equal(detail.restrictions[1].restricted,true);
+  await registry.restrict('attendance',{scope:'user',tenantId:'t1',companyCode:'',userId:'e1',restricted:true,reason:'Review'},'admin');
+  assert.equal(calls.at(-1).path,'/api/admin-connector/companies/t1/users/e1/access');
+  assert.equal(audits.at(-1)[1],'app.restriction.applied');
+  await assert.rejects(()=>registry.restrict('attendance',{scope:'user',tenantId:'t1',companyCode:'',userId:'unknown'},'admin'));
+  await assert.rejects(()=>registry.save({id:'pos'},'admin'));
+  console.log('Multi-app registry tests passed (mock connectors; no network or database writes).');
+})().catch(error=>{console.error(error);process.exitCode=1;});

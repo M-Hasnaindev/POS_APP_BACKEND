@@ -35,3 +35,18 @@ exports.verifyToken = async (req, res, next) => {
 };
 
 exports.extractToken = extractToken;
+
+// Recovery is limited to this read-only status endpoint. Expired credentials
+// never authorize a business request or issue a replacement access token.
+exports.accessStatus = async (req,res) => {
+  let decoded;
+  try {
+    decoded=jwt.verify(extractToken(req),process.env.JWT_SECRET,{algorithms:['HS256'],ignoreExpiration:true});
+    if(decoded.type!=='access'||!decoded.userId||!decoded.tenantId||!Number.isFinite(decoded.exp)||!getTenantById(decoded.tenantId))throw Error('Invalid identity');
+  } catch {
+    return res.status(401).json({success:false,message:'Invalid access identity'});
+  }
+  if(!await require('./accessRestriction').enforceAccess(decoded,res))return;
+  const expired=decoded.exp*1000<=Date.now();
+  return res.json({success:true,allowed:!expired,reauthenticate:expired,checkedAt:new Date().toISOString()});
+};

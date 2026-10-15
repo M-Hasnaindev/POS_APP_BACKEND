@@ -34,6 +34,9 @@ BEGIN TRY
   Bucket char(64) NOT NULL PRIMARY KEY,WindowStart datetime2 NOT NULL,Attempts int NOT NULL);
  IF OBJECT_ID('dbo.POSAdminAudit') IS NULL CREATE TABLE dbo.POSAdminAudit (
   Id bigint IDENTITY PRIMARY KEY,Actor nvarchar(254) NOT NULL,Action nvarchar(80) NOT NULL,Target nvarchar(500) NOT NULL,CreatedAt datetime2 NOT NULL DEFAULT SYSUTCDATETIME());
+ IF OBJECT_ID('dbo.POSAdminApps') IS NULL CREATE TABLE dbo.POSAdminApps (
+  Id nvarchar(64) NOT NULL PRIMARY KEY,Name nvarchar(100) NOT NULL,BaseUrl nvarchar(500) NOT NULL,SecretCipher nvarchar(max) NOT NULL,
+  UpdatedAt datetime2 NOT NULL DEFAULT SYSUTCDATETIME());
  COMMIT TRANSACTION;
 END TRY BEGIN CATCH IF @@TRANCOUNT>0 ROLLBACK TRANSACTION; THROW; END CATCH;`;
 const aliases = {
@@ -55,6 +58,9 @@ const aliases = {
   Email: "email",
   ExpiresAt: "expiresAt",
   RevokedAt: "revokedAt",
+  Name: "name",
+  BaseUrl: "baseUrl",
+  SecretCipher: "secretCipher",
 };
 const mapRow = (row) =>
   Object.fromEntries(
@@ -207,7 +213,17 @@ function createAdminStore(poolProvider = getPoolForTenant) {
       { id, actor },
     );
   }
+  async function apps() {
+    return (await query("SELECT * FROM dbo.POSAdminApps ORDER BY Name")).recordset.map(mapRow);
+  }
+  async function saveApp(app, actor, create) {
+    await query(`SET XACT_ABORT ON; BEGIN TRANSACTION;
+      ${create ? "INSERT INTO dbo.POSAdminApps(Id,Name,BaseUrl,SecretCipher) VALUES(@id,@name,@baseUrl,@secretCipher);" : "UPDATE dbo.POSAdminApps SET Name=@name,BaseUrl=@baseUrl,SecretCipher=@secretCipher,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id;"}
+      INSERT INTO dbo.POSAdminAudit(Actor,Action,Target) VALUES(@actor,'app.connection.changed',@id); COMMIT;`, {...app,actor});
+  }
   return {
+    apps,
+    saveApp,
     restrictions,
     checkAccess,
     setRestriction,

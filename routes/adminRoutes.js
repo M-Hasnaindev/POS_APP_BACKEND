@@ -15,6 +15,7 @@ const uuid = (value) => {
 };
 function createAdminRouter(store = adminStore, dir = directory) {
   const router = express.Router();
+  const apps = require('../services/adminApps').createApps(store, dir);
   router.use((req, res, next) => {
     res.set({
       "Cache-Control": "no-store",
@@ -49,6 +50,30 @@ function createAdminRouter(store = adminStore, dir = directory) {
       expiresAt: new Date(req.admin.exp * 1000).toISOString(),
     }),
   );
+  router.get('/apps', async (req,res)=>res.json({success:true,apps:await apps.list()}));
+  router.post('/apps', async (req,res)=>{
+    await auth.password(req,store);
+    res.status(201).json({success:true,app:await apps.save(req.body,req.admin.email)});
+  });
+  router.patch('/apps/:id', async (req,res)=>{
+    await auth.password(req,store);
+    res.json({success:true,app:await apps.save(req.body,req.admin.email,req.params.id)});
+  });
+  router.post('/apps/:id/test', async (req,res)=>res.json({success:true,tenantCount:(await apps.tenants(req.params.id)).length}));
+  router.get('/apps/:id/tenants', async (req,res)=>res.json({success:true,tenants:await apps.tenants(req.params.id)}));
+  router.get('/apps/:id/tenants/:tenantId', async (req,res)=>res.json({success:true,...await apps.detail(req.params.id,req.params.tenantId)}));
+  router.post('/apps/:id/tenants/:tenantId/key/reveal', async (req,res)=>{
+    await auth.password(req,store);
+    res.json({success:true,key:await apps.revealKey(req.params.id,req.params.tenantId,req.admin.email)});
+  });
+  router.put('/apps/:id/restrictions', async (req,res)=>{
+    const b=req.body;
+    if(!['tenant','company','user'].includes(b.scope)||typeof b.restricted!=='boolean')throw fail('Invalid restriction.');
+    const row={scope:b.scope,tenantId:str(b.tenantId),companyCode:b.scope==='tenant'?'':str(b.companyCode??''),userId:b.scope==='user'?str(b.userId):'',restricted:b.restricted,reason:str(b.reason??'',1000)};
+    if(!row.tenantId||(row.scope==='user'&&!row.userId))throw fail('Restriction identity is required.');
+    await apps.restrict(req.params.id,row,req.admin.email);
+    res.json({success:true,restriction:row});
+  });
   router.post("/logout", async (req, res) => {
     await store.revokeSession(req.admin.sid);
     auth.cookie(res, "", 0);
