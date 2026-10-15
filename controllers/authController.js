@@ -152,6 +152,7 @@ exports.login = async (req, res) => {
     }
 
     const user = matchingUsers[0];
+    if (!await require("../middleware/accessRestriction").enforceAccess({tenantId: tenantPayload.tenantId, companyCode: user.CompanyCode, userId: user.UserID}, res)) return;
     const token = jwt.sign(
       {
         type: "access",

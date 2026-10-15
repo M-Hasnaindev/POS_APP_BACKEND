@@ -8,7 +8,7 @@ function extractToken(req) {
   return String(header).trim();
 }
 
-exports.verifyToken = (req, res, next) => {
+exports.verifyToken = async (req, res, next) => {
   const token = extractToken(req);
 
   if (!token) {
@@ -26,6 +26,7 @@ exports.verifyToken = (req, res, next) => {
       return res.status(401).json({ success: false, message: "Tenant no longer available" });
     }
 
+    if (!await require("./accessRestriction").enforceAccess(decoded, res)) return;
     req.user = decoded;
     next();
   } catch (err) {

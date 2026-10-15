@@ -1230,7 +1230,11 @@ async function processTenantPushes(tenantId) {
     candidatesByUser.set(recipient, bucket);
   }
 
+  let accessCheckUnavailable = false;
   for (const device of devices) {
+    const access = await require("../services/adminPushAccess").pushAccess(tenantId, device);
+    if (access.unavailable) accessCheckUnavailable = true;
+    if (!access.allowed) continue;
     const token = text(device.ExpoPushToken);
     const isExpoToken = /^Expo(nent)?PushToken\[.+\]$/.test(token);
     const isFcmToken = isDirectFcmToken(token);
@@ -1354,6 +1358,8 @@ async function processTenantPushes(tenantId) {
     }
   }
 
+  // Preserve pending deliveries if the access store was unavailable.
+  if (!accessCheckUnavailable) {
   // Advance the checkpoint only after active-device notifications have either
   // succeeded or invalid/uninstalled device tokens have been deactivated.
   await db.request()
@@ -1363,6 +1369,8 @@ async function processTenantPushes(tenantId) {
       SET LastPushCheckAt = @cutoff
       WHERE IsActive = 1
     `);
+  }
+
 
   return {
     tenantId,

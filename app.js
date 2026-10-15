@@ -45,6 +45,7 @@ const intelligenceRoutes = require("./routes/intelligenceRoutes");
 const accountingRoutes = require("./routes/accountingRoutes");
 
 
+app.use("/api/admin", require("./routes/adminRoutes"));
 app.use("/api/auth", authRoutes);
 app.use("/api/sales", salesRoutes);
 app.use("/api/notifications", notificationRoutes);
