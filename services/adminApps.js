@@ -33,6 +33,12 @@ function validateUrl(value) {
   if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash||(url.port&&url.port!=='443')||net.isIP(url.hostname)||!url.hostname.includes('.')||url.hostname.endsWith('.local')) throw fail('Use a public HTTPS backend URL without credentials, query or custom port.');
   return url.toString().replace(/\/+$/,'');
 }
+function connectorFailure(status) {
+  if(status===401||status===403) return fail('App connector authentication failed. Check the configured connector key.',502,'APP_CONNECTOR_AUTH_FAILED');
+  if(status===503) return fail('This app cannot access its company database or access-control storage. Please retry after its backend is available.',503,'APP_CONNECTOR_STORAGE_UNAVAILABLE');
+  if(status===404) return fail('This app backend does not provide the requested admin connector endpoint. Check its deployment.',502,'APP_CONNECTOR_ENDPOINT_MISSING');
+  return fail('App connector rejected the request. Check its configuration and status.',502,'APP_CONNECTOR_REJECTED');
+}
 async function connector(app,path,body) {
   const base=validateUrl(app.baseUrl), url=new URL(base+path);
   const addresses=await dns.lookup(url.hostname,{all:true,family:4});
@@ -44,7 +50,7 @@ async function connector(app,path,body) {
       response.on('data',part=>{bytes+=part.length;if(bytes>5*1024*1024){response.destroy();reject(fail('App response is too large.',502));}else parts.push(part);});
       response.on('error',()=>reject(fail('App connection interrupted.',502)));
       response.on('end',()=>{
-        if(response.statusCode<200||response.statusCode>=300) return reject(fail('App connector rejected the request. Check its configuration and status.',502));
+        if(response.statusCode<200||response.statusCode>=300) return reject(connectorFailure(response.statusCode));
         try {const result=JSON.parse(Buffer.concat(parts).toString('utf8'));if(result.success!==true)throw Error();resolve(result);}catch {reject(fail('App connector returned an invalid response.',502));}
       });
     });
@@ -103,4 +109,4 @@ function createApps(store,dir,remote=connector) {
   }
   return {list:async()=>[local,...(await store.apps()).map(safe)],get,tenants,detail,restrict,save,revealKey};
 }
-module.exports={createApps,connector,validateUrl,publicAddress,encrypt,decrypt,safe};
+module.exports={createApps,connector,connectorFailure,validateUrl,publicAddress,encrypt,decrypt,safe};

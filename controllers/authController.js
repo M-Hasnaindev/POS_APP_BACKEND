@@ -187,6 +187,7 @@ exports.getUserDetail = async (req, res) => {
     const db = await getPoolForTenant(req.user.tenantId);
     const result = await db.request()
       .input("userId", sql.VarChar, req.user.userId)
+      .input("companyCode", sql.VarChar, String(req.user.companyCode ?? "").trim())
       .query(`
         SELECT 
           CompanyCode, UserID, ShortName, UserName,
@@ -194,6 +195,7 @@ exports.getUserDetail = async (req, res) => {
           AllowBranches, AllowAccount, AllowProduct, UserImage
         FROM Security
         WHERE UserID = @userId
+          AND LTRIM(RTRIM(ISNULL(CompanyCode, ''))) = @companyCode
       `);
 
     if (result.recordset.length === 0) {
