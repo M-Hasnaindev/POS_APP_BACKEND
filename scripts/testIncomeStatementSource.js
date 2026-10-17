@@ -1,0 +1,15 @@
+const assert=require('node:assert/strict');
+const{assembleIncomeStatement,loadIncomeStatement}=require('../services/incomeStatementSource');const{buildReportPlan}=require('../services/accountingReports');
+const options={branches:[{BranchCode:'1',Type:'C'},{BranchCode:'101002',BranchName:'Mission Road',Type:'D'},{BranchCode:'101003',Type:'D'}],accounts:[],levels:[{Row:0}]};
+const f={fromDate:'2026-09-01',toDate:'2026-09-30',branchCodes:['101002']};const plan=buildReportPlan('income-statement',f,'UR',options);assert.equal(plan.reportType,'I');assert.equal(plan.params[17],'B');assert.equal(plan.params[9],'Y');assert.equal(plan.params[10],'Y');assert.equal(plan.params[15],'N');const fixed=buildReportPlan('income-statement',{...f,includeOpening:false,includePdc:false,includeClosingAdjustment:true,havingNoTransaction:false},'UR',options);assert.equal(fixed.params[9],'Y');assert.equal(fixed.params[10],'Y');assert.equal(fixed.params[13],'Y');assert.equal(fixed.params[15],'N');assert.equal(plan.params[16],',101002,');
+assert.throws(()=>buildReportPlan('income-statement',{...f,branchCodes:['other']},'UR',options),e=>e.code==='BRANCH_ACCESS_DENIED');
+const input={params:plan.params,options,columnMappings:{branches:[{Row:2,BranchCode:'101002'}]},rows:[{ActCod:'401010001',AcName:'Sales',TDebit2:0,TCredit2:6363175,TDebit1:999,TCredit1:0,AcNature:'4',Level1Code:'4',Level1Name:'4 - Revenue',Level2Code:'401',Level2Name:'401 - Sales'}]};
+input.rows[0].AcName='SALES ACCOUNT';
+ for(const[code,name,nature]of [['401020001','SALES RETURN ACCOUNT','4'],['401030001','SALES DISCOUNT ACCOUNT','4'],['501010001','PURCHASE ACCOUNT','5'],['501020001','PURCHASE RETURN ACCOUNT','5'],['501020002','PURCHASE DISCOUNT ACCOUNT','5']])input.rows.push({ActCod:code,AcName:name,AcNature:nature,TDebit2:0,TCredit2:0});
+ const stock=new Map([['101002',{openingInventory:11471696,closingInventory:10903579}]]);const result=assembleIncomeStatement(input,stock);assert.equal(result.branches[0].accounts[0].movement,-6363175);assert.equal(result.branches[0].accounts[0].groupCode,'401');assert.equal(result.branches[0].openingInventory,11471696);
+assert.throws(()=>assembleIncomeStatement(input,new Map()),e=>e.code==='INCOME_SOURCE_INCOMPLETE');assert.throws(()=>assembleIncomeStatement({...input,columnMappings:{branches:[]}},stock),e=>e.code==='INCOME_SOURCE_INCOMPLETE');assert.throws(()=>assembleIncomeStatement({...input,rows:[{ActCod:'401',TDebit2:0}]},stock),e=>e.code==='INCOME_MAPPING_REQUIRED');
+assert.throws(()=>buildReportPlan('income-statement',{...f,toDate:'2026-08-31'},'UR',options),/From date/);
+assert.throws(()=>buildReportPlan('income-statement',{...f,fromDate:'2026-02-30'},'UR',options),/Invalid/);
+console.log('PASS Income source branch/date contract, pivot isolation, hierarchy, missing stock/account fields');
+
+assert.rejects(loadIncomeStatement({}, {...input,options:{...options,companyStart:'2026-06-01'},deadline:Date.now()-1}),e=>e.code==='INCOME_SOURCE_TIMEOUT').then(()=>console.log('PASS expired shared deadline rejected before opening stock transaction')).catch(e=>{console.error(e);process.exitCode=1;});

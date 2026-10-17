@@ -1,0 +1,21 @@
+const assert=require('node:assert/strict');
+const db=require('../config/db'),lookup=require('../services/accountingFilterOptions'),accounting=require('../services/accountingService'),income=require('../services/incomeStatementSource');
+let reads=0,allowed=true,lookups=0;
+lookup.loadAccountingFilterOptions=async()=>{lookups++;return {branches:allowed?[{BranchCode:'01',Type:'D'}]:[],accounts:[],levels:[]};};
+accounting.resolveCompanyStartDate=async()=> '2026-06-01';
+income.loadIncomeStatement=async()=>({branches:[{branchCode:'01'}],sequence:++reads});
+db.sql.Transaction=class{async begin(){}async rollback(){}};
+db.sql.Request=class{input(){return this;}async query(){return {recordset:[],recordsets:[[],[]]};}};
+const {executeAccountingReport}=require('../services/accountingReports');
+(async()=>{
+ const pool={},context={tenantId:'t1',userId:'u1',companyCode:'UR'},f={fromDate:'2026-09-01',toDate:'2026-09-30',branchCodes:['01']};
+ const run=(filters=f,c=context)=>executeAccountingReport(pool,c,'income-statement',filters);
+ assert.equal((await run()).incomeStatement.sequence,1);
+ assert.equal((await run()).incomeStatement.sequence,1);assert.equal(lookups,2,'cache hits still reload access');
+ allowed=false;await assert.rejects(run(),e=>e.code==='BRANCH_ACCESS_DENIED');assert.equal(reads,1,'revoked access cannot consume cached results');
+ allowed=true;assert.equal((await run({...f,forceRefresh:true})).incomeStatement.sequence,2);
+ assert.equal((await run(f,{...context,userId:'u2'})).incomeStatement.sequence,3);
+ assert.equal((await run(f,{...context,tenantId:'t2'})).incomeStatement.sequence,4);
+ assert.equal((await run({...f,toDate:'2026-09-29'})).incomeStatement.sequence,5);
+ console.log('PASS: actual report service rechecks revoked access before cache; refresh, tenant, user and date isolation.');
+})().catch(e=>{console.error(e);process.exitCode=1;});

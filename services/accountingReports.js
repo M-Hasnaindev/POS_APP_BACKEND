@@ -1,9 +1,12 @@
 const {sql}=require('../config/db');
+const {loadIncomeStatement}=require('./incomeStatementSource');
 const {resolveCompanyStartDate}=require('./accountingService');
 const {loadAccountingFilterOptions}=require('./accountingFilterOptions');
+const {createIncomeReportCache}=require('./incomeReportCache');
+const cachedIncomeReport=createIncomeReportCache();
 const error=(message,statusCode=422,code='INVALID_REPORT_FILTER')=>Object.assign(new Error(message),{statusCode,code});
-const TYPES={'accounting-ledger':'L','trial-balance':'T','trial-balance-six-column':'T','account-movement':'M','audit-trial':'A','month-wise-account':'MWR','month-wise-expense':'MWR','month-wise-cash-bank':'MWR','daily-cash-bank-flow':'DAILYCASH','party-wise-collection':'PWC','party-wise-payment':'PWP','receivable-aging':'BILLWISE','payable-aging':'BILLWISE','chart-of-accounts':'COA','cash-bank-position':'B'};
-const UNVERIFIED=['income-statement','balance-sheet','post-dated-cheques'];
+const TYPES={'income-statement':'I','accounting-ledger':'L','trial-balance':'T','trial-balance-six-column':'T','account-movement':'M','audit-trial':'A','month-wise-account':'MWR','month-wise-expense':'MWR','month-wise-cash-bank':'MWR','daily-cash-bank-flow':'DAILYCASH','party-wise-collection':'PWC','party-wise-payment':'PWP','receivable-aging':'BILLWISE','payable-aging':'BILLWISE','chart-of-accounts':'COA','cash-bank-position':'B'};
+const UNVERIFIED=['balance-sheet','post-dated-cheques'];
 const norm=s=>String(s).toLowerCase().replace(/[^a-z0-9]/g,'');
 function field(row,keys){for(const key of keys){const found=Object.keys(row).find(k=>norm(k)===norm(key));if(found&&row[found]!=null&&String(row[found]).trim())return String(row[found]).trim();}return '';}
 const accountCode=r=>field(r,['ActCod','AccountCode','ACCode','Code','ID']);
@@ -26,6 +29,12 @@ function buildReportPlan(id,f,companyCode,options){
  if(!accounts.length&&id!=='month-wise-cash-bank'){accounts=[...set];if(!accounts.length)throw error('No matching accounts are available for this report.');}
  }
  if(id==='cash-bank-position'&&choice(f,'view',['summary','detail'],'summary')==='detail')throw error('Cash & bank detail procedure mapping is not verified. Choose Summary.',422,'REPORT_NOT_CONFIGURED');
+ if(id==='income-statement'){
+ if(accounts.length)throw error('Income Statement requires the complete chart of accounts.');
+ const detail=options.branches.filter(r=>field(r,['Type','BranchType'])==='D').map(branchCode);
+ if(detail.length)branches=detail.filter(c=>branches.some(selected=>c===selected||c.startsWith(selected)));
+ if(!branches.length)throw error('No authorized detail branches are available.',403,'BRANCH_ACCESS_DENIED');
+}
  const aging=id.endsWith('-aging');
  if(aging){const reportType=choice(f,'agingView',['bill-wise','party-wise'],'bill-wise')==='bill-wise'?'BILLWISE':'PARTYWISE';return {procedure:'BillBalance',reportType,params:[companyCode,wrap(accounts),date(f.asOnDate,'as-on date'),'',reportType,choice(f,'billType',['A','C','O','D','U'],'A'),'ALL',choice(f,'partyType',['C','S','B'],id==='receivable-aging'?'C':'S'),wrap(branches),'']};}
  const from=date(id==='cash-bank-position'?options.companyStart:f.fromDate,'from date'),to=date(id==='cash-bank-position'?f.asOnDate:f.toDate,'to date');if(from>to)throw error('From date must be before or equal to To date.');
@@ -33,15 +42,26 @@ function buildReportPlan(id,f,companyCode,options){
  const reportType=TYPES[id]+(party&&choice(f,'view',['summary','detail'],'summary')==='detail'?'D':'');
  const levelReports=['trial-balance','trial-balance-six-column','account-movement','month-wise-account','month-wise-expense','month-wise-cash-bank'];
  const level=levelReports.includes(id)?choice(f,'reportLevel',options.levels.map(r=>String(r.Row)),'0'):'0';
- return {procedure:'AccProc',reportType,params:[audit?'':wrap(accounts),from,to,reportType,audit?choice(f,'voucherType',['AL','CB','BB','JV','SV','PV','DN','CN','ODN','OCN','AD'],'AL'):'AL','Cherrys',audit||daily||party||cash||month||id==='account-movement'?'YES':'',audit?choice(f,'auditStatus',['ALL','NEQUAL','EQUAL'],'ALL'):'ALL',level,audit||daily||party||cash?'Y':yn(f,'includeOpening',true),audit?'Y':daily||cash?'N':yn(f,'includePdc'),'00000000000000','zzzzzzzzzzzz',audit||daily||party||cash?'Y':yn(f,'havingNoTransaction',true),companyCode,cash?'N':yn(f,'includeClosingAdjustment'),wrap(branches),daily?'C':choice(f,'reporting',['B','C'],'C'),id==='accounting-ledger'?choice(f,'dateBasis',['V','C','D'],'V'):'V']};
+ return {procedure:'AccProc',reportType,params:[audit?'':wrap(accounts),from,to,reportType,audit?choice(f,'voucherType',['AL','CB','BB','JV','SV','PV','DN','CN','ODN','OCN','AD'],'AL'):'AL','Cherrys',audit||daily||party||cash||month||id==='account-movement'?'YES':'',audit?choice(f,'auditStatus',['ALL','NEQUAL','EQUAL'],'ALL'):'ALL',level,audit||daily||party||cash||id==='income-statement'?'Y':yn(f,'includeOpening',true),audit||id==='income-statement'?'Y':daily||cash?'N':yn(f,'includePdc'),'00000000000000','zzzzzzzzzzzz',audit||daily||party||cash||id==='income-statement'?'Y':yn(f,'havingNoTransaction',true),companyCode,cash||id==='income-statement'?'N':yn(f,'includeClosingAdjustment'),wrap(branches),daily?'C':(id==='income-statement'?'B':choice(f,'reporting',['B','C'],'C')),id==='accounting-ledger'?choice(f,'dateBasis',['V','C','D'],'V'):'V']};
 }
 async function executeAccountingReport(pool,context,id,filters){
+ const deadline=id==='income-statement'?Date.now()+280000:null;
  checkReport(id);
  const options=await loadAccountingFilterOptions(pool,context);
- if(id==='cash-bank-position')options.companyStart=await resolveCompanyStartDate(pool,context.companyCode);
+ if(id==='cash-bank-position'||id==='income-statement')options.companyStart=await resolveCompanyStartDate(pool,context.companyCode);
  const plan=buildReportPlan(id,filters,context.companyCode,options);
+ if(id==='income-statement'){
+  // Access is reloaded and the plan revalidated even on a cache hit. The key
+  // isolates identity, authorized scope, chart metadata, period, and all flags.
+  const key=JSON.stringify([context.tenantId,context.userId,context.companyCode,plan,options]);
+  return cachedIncomeReport(pool,key,()=>executeReportPlan(pool,context,id,plan,options,deadline),{refresh:filters.forceRefresh===true});
+ }
+ return executeReportPlan(pool,context,id,plan,options,deadline);
+}
+async function executeReportPlan(pool,context,id,plan,options,deadline){
  let rows=plan.rows;
  const columnMappings={branches:[],accounts:[]};
+ let incomeStatement;
  if(plan.procedure){
   // AccProc writes shared working tables; return its rows but roll back all working-table changes.
   // Serialize POS executions per database. Finance callers do not acquire this application lock.
@@ -51,7 +71,7 @@ async function executeAccountingReport(pool,context,id,filters){
    await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);begun=true;
    await new sql.Request(transaction).query("DECLARE @r int; EXEC @r=sys.sp_getapplock @Resource='POSAccountingReports',@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=10000; IF @r<0 THROW 51000,'Report is busy. Retry shortly.',1;");
    if(plan.procedure==='AccProc')await new sql.Request(transaction).input('userId',sql.NVarChar(100),context.userId).query("IF OBJECT_ID('TmpStores') IS NOT NULL DELETE FROM TmpStores WHERE UserID=@userId; IF OBJECT_ID('Tmp_Branch') IS NOT NULL DELETE FROM Tmp_Branch WHERE UserID=@userId;");
-   const request=new sql.Request(transaction);plan.params.forEach((value,index)=>request.input('p'+index,sql.NVarChar(sql.MAX),value));request.timeout=80000;
+   const request=new sql.Request(transaction);plan.params.forEach((value,index)=>request.input('p'+index,sql.NVarChar(sql.MAX),value));request.timeout=deadline?Math.max(1,Math.min(80000,deadline-Date.now())):80000;
    const result=await request.query('EXEC '+plan.procedure+' '+plan.params.map((_,i)=>'@p'+i).join(', '));rows=result.recordset||[];
    if(plan.procedure==='AccProc'){
     const mappings=await new sql.Request(transaction).input('userId',sql.NVarChar(100),context.userId).input('company',sql.NVarChar(50),context.companyCode).query("IF OBJECT_ID('Tmp_Branch') IS NOT NULL SELECT [Row],BranchCode,BranchName FROM Tmp_Branch WHERE UserID=@userId ORDER BY [Row]; ELSE SELECT 1 WHERE 1=0; IF OBJECT_ID('TmpStores') IS NOT NULL SELECT [Row],StoreCode,StoreName FROM TmpStores WHERE UserID=@userId AND CompanyCode=@company ORDER BY [Row]; ELSE SELECT 1 WHERE 1=0;");
@@ -61,6 +81,7 @@ async function executeAccountingReport(pool,context,id,filters){
   }catch(err){if(begun)await transaction.rollback().catch(()=>undefined);throw err;}
  }
 
- return {rows,columnMappings,reportId:id,procedure:plan.procedure,reportType:plan.reportType,companyCode:context.companyCode,generatedAt:new Date().toISOString()};
+ if(id==='income-statement')incomeStatement=await loadIncomeStatement(pool,{rows,columnMappings,params:plan.params,options,deadline});
+ return {rows:incomeStatement?[]:rows,columnMappings:incomeStatement?{branches:[],accounts:[]}:columnMappings,...(incomeStatement?{incomeStatement}:{}),reportId:id,procedure:plan.procedure,reportType:plan.reportType,companyCode:context.companyCode,generatedAt:new Date().toISOString()};
 }
 module.exports={buildReportPlan,executeAccountingReport,TYPES,UNVERIFIED};

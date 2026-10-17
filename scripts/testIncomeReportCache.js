@@ -1,0 +1,22 @@
+const assert=require('node:assert/strict');
+const {createIncomeReportCache}=require('../services/incomeReportCache');
+(async()=>{
+ let time=0,calls=0;const pool={},otherPool={},cache=createIncomeReportCache({ttlMs:60,now:()=>time,maxEntries:2,maxBytes:1024});
+ const load=async()=>({value:++calls});
+ const first=await cache(pool,'tenant/user/branch/date',load);first.value=100;
+ assert.equal((await cache(pool,'tenant/user/branch/date',load)).value,1,'caller mutation cannot corrupt cached financial data');
+ assert.equal((await cache(otherPool,'tenant/user/branch/date',load)).value,2,'pool isolation');
+ assert.equal((await cache(pool,'tenant/other-user/branch/date',load)).value,3,'identity isolation');
+ time=61;assert.equal((await cache(pool,'tenant/user/branch/date',load)).value,4,'expired data reloaded');
+ assert.equal((await cache(pool,'tenant/user/branch/date',load,{refresh:true})).value,5,'explicit reload bypasses cache');
+ let release;const waiting=new Promise(resolve=>release=resolve);let started=0;
+ const one=cache(pool,'same',async()=>{started++;await waiting;return {ok:true};});
+ const two=cache(pool,'same',load);release();assert.deepEqual(await one,await two);assert.equal(started,1);
+ await assert.rejects(cache(pool,'error',async()=>{throw new Error('source failed');}),/source failed/);
+ assert.equal((await cache(pool,'error',load)).value,6,'errors are not cached');
+ let finishOld;const old=cache(pool,'race',()=>new Promise(resolve=>finishOld=resolve));await Promise.resolve();
+ await cache(pool,'race',async()=>({value:'fresh'}),{refresh:true});finishOld({value:'old'});await old;
+ assert.equal((await cache(pool,'race',load)).value,'fresh','old completion cannot overwrite refresh');
+ await cache(pool,'a',load);await cache(pool,'b',load);const before=calls;await cache(pool,'race',load);assert.equal(calls,before+1,'bounded eviction');
+ console.log('PASS: report cache expiration, pool/key isolation, deduplication, failures, refresh race, cloning and bounded eviction.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
