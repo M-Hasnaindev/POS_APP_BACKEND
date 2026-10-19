@@ -3,7 +3,7 @@ const https = require('node:https');
 const dns = require('node:dns').promises;
 const net = require('node:net');
 const {fail} = require('./adminStore');
-const local = {id:'pos',name:'POS',kind:'local',baseUrl:'',secretConfigured:true};
+const local = {id:'pos',name:'POS',kind:'local',baseUrl:'',secretConfigured:true,restrictionsEnabled:false};
 function key() {
   const raw = process.env.ADMIN_CONNECTOR_ENCRYPTION_KEY || '';
   if (!/^[0-9a-f]{64}$/i.test(raw)) throw fail('Configure ADMIN_CONNECTOR_ENCRYPTION_KEY before adding apps.',503);
@@ -67,7 +67,7 @@ function createApps(store,dir,remote=connector) {
   async function tenants(id) {const app=await get(id);return id==='pos'?dir.tenants.map(dir.tenantSummary):(await companies(app)).map(c=>({id:String(c.id),label:c.name,key:'••••••••',restricted:!!c.restricted,reason:c.reason||''}));}
   async function detail(id,tenantId) {
     const app=await get(id);
-    if(id==='pos')return {...await dir.detail(tenantId),restrictions:(await store.restrictions()).filter(r=>r.tenantId===tenantId)};
+    if(id==='pos')return {...await dir.detail(tenantId),restrictions:[],restrictionsEnabled:false};
     const company=(await companies(app)).find(c=>String(c.id)===tenantId);if(!company)throw fail('Company not found.',404);
     const result=await remote(app,'/api/admin-connector/companies/'+segment(tenantId)+'/users');
     if(!Array.isArray(result.users))throw fail('Invalid employee directory.',502);
@@ -76,7 +76,7 @@ function createApps(store,dir,remote=connector) {
   }
   async function restrict(id,row,actor) {
     const app=await get(id);
-    if(id==='pos'){await dir.validateScope(row);await store.setRestriction(row,actor);return;}
+    if(id==='pos')throw fail('Admin restrictions are disabled for POS.',410,'POS_RESTRICTIONS_DISABLED');
     if(row.companyCode)throw fail('This app uses tenant-level companies.');
     const data=await detail(id,row.tenantId);
     if(row.scope==='user'&&!data.users.some(u=>u.userId===row.userId))throw fail('User not found.',404);

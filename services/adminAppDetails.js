@@ -56,9 +56,7 @@ function createAppDetails(apps, store, dir, remote = connector, releaseReader = 
       if (!result.overview) throw fail('App overview is unavailable.', 502);
       return result.overview;
     }
-    const blocked = (await store.restrictions()).filter(r => r.restricted);
-    return {tenantCount:dir.tenants.length,restrictedTenants:blocked.filter(r=>r.scope==='tenant').length,
-      restrictedCompanies:blocked.filter(r=>r.scope==='company').length,restrictedUsers:blocked.filter(r=>r.scope==='user').length};
+    return {tenantCount:dir.tenants.length,restrictedTenants:0,restrictedCompanies:0,restrictedUsers:0,restrictionsEnabled:false};
   }
   return {info, environment, reveal, download, overview};
 }

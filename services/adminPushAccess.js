@@ -1,23 +1,9 @@
-const { adminStore } = require("./adminStore");
-// Worker-only access decision: identity comes from the stored device record.
-async function pushAccess(tenantId, device, store = adminStore) {
-  if (
-    device.CompanyCode === undefined ||
-    device.CompanyCode === null ||
-    !device.UserId
-  )
-    return { allowed: false, unavailable: true };
-  try {
-    return {
-      allowed: !(await store.checkAccess({
-        tenantId,
-        companyCode: device.CompanyCode,
-        userId: device.UserId,
-      })),
-      unavailable: false,
-    };
-  } catch {
-    return { allowed: false, unavailable: true };
-  }
+// POS notification delivery no longer depends on admin restriction storage.
+// Recipient identity and notification preferences remain enforced by the worker.
+async function pushAccess(tenantId, device) {
+  return {
+    allowed: Boolean(tenantId && device && device.UserId),
+    unavailable: false,
+  };
 }
 module.exports = { pushAccess };

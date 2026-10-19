@@ -26,7 +26,10 @@ exports.verifyToken = async (req, res, next) => {
       return res.status(401).json({ success: false, message: "Tenant no longer available" });
     }
 
-    if (!await require("./accessRestriction").enforceAccess(decoded, res)) return;
+    if (!Object.prototype.hasOwnProperty.call(decoded, "companyCode")) {
+      return res.status(401).json({ success: false, code: "ACCESS_IDENTITY_REQUIRED", message: "Please sign in again." });
+    }
+
     req.user = decoded;
     next();
   } catch (err) {
@@ -42,11 +45,10 @@ exports.accessStatus = async (req,res) => {
   let decoded;
   try {
     decoded=jwt.verify(extractToken(req),process.env.JWT_SECRET,{algorithms:['HS256'],ignoreExpiration:true});
-    if(decoded.type!=='access'||!decoded.userId||!decoded.tenantId||!Number.isFinite(decoded.exp)||!getTenantById(decoded.tenantId))throw Error('Invalid identity');
+    if(decoded.type!=='access'||!decoded.userId||!decoded.tenantId||!Object.prototype.hasOwnProperty.call(decoded,'companyCode')||!Number.isFinite(decoded.exp)||!getTenantById(decoded.tenantId))throw Error('Invalid identity');
   } catch {
     return res.status(401).json({success:false,message:'Invalid access identity'});
   }
-  if(!await require('./accessRestriction').enforceAccess(decoded,res))return;
   const expired=decoded.exp*1000<=Date.now();
   return res.json({success:true,allowed:!expired,reauthenticate:expired,checkedAt:new Date().toISOString()});
 };

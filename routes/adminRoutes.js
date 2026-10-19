@@ -93,8 +93,8 @@ function createAdminRouter(store = adminStore, dir = directory) {
     res.json({ success: true });
   });
   router.get("/overview", async (req, res) => {
-    const [r, t] = await Promise.all([store.restrictions(), store.tasks()]);
-    const blocked = r.filter((x) => x.restricted);
+    const t = await store.tasks();
+    const blocked = [];
     res.json({
       success: true,
       overview: {
@@ -116,9 +116,8 @@ function createAdminRouter(store = adminStore, dir = directory) {
     res.json({
       success: true,
       ...(await dir.detail(req.params.id)),
-      restrictions: (await store.restrictions()).filter(
-        (x) => x.tenantId === req.params.id,
-      ),
+      restrictions: [],
+      restrictionsEnabled: false,
     }),
   );
   router.post("/tenants/:id/key/reveal", async (req, res) => {
@@ -129,28 +128,10 @@ function createAdminRouter(store = adminStore, dir = directory) {
     res.json({ success: true, key: t.key });
   });
   router.get("/restrictions", async (req, res) =>
-    res.json({ success: true, restrictions: await store.restrictions() }),
+    res.json({ success: true, restrictions: [], restrictionsEnabled: false }),
   );
   router.put("/restrictions", async (req, res) => {
-    const b = req.body;
-    if (
-      !["tenant", "company", "user"].includes(b.scope) ||
-      typeof b.restricted !== "boolean"
-    )
-      throw fail("Invalid restriction.");
-    const row = {
-      scope: b.scope,
-      tenantId: str(b.tenantId),
-      companyCode: b.scope === "tenant" ? "" : str(b.companyCode ?? ""),
-      userId: b.scope === "user" ? str(b.userId) : "",
-      restricted: b.restricted,
-      reason: str(b.reason ?? "", 1000),
-    };
-    if (row.scope === "user" && !row.userId)
-      throw fail("Restriction identity is required.");
-    await dir.validateScope(row);
-    await store.setRestriction(row, req.admin.email);
-    res.json({ success: true, restriction: row });
+    throw fail("Admin restrictions are disabled for POS.", 410, "POS_RESTRICTIONS_DISABLED");
   });
   router.get("/environment", (req, res) =>
     res.json({

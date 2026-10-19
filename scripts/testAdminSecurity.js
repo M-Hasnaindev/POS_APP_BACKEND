@@ -9,7 +9,6 @@ const assert = require("node:assert/strict"),
   express = require("express"),
   jwt = require("jsonwebtoken");
 const { createAdminRouter } = require("../routes/adminRoutes");
-const { enforceAccess } = require("../middleware/accessRestriction");
 const sessions = new Map(),
   restrictions = [],
   tasks = [];
@@ -129,137 +128,17 @@ process.env.TEST_APP_VALUE = "test-only";
       ).status,
       400,
     );
-    assert.equal(
-      (
-        await req(
-          "/restrictions",
-          "PUT",
-          {
-            scope: "company",
-            tenantId: "t1",
-            companyCode: "A",
-            restricted: true,
-            reason: "Test",
-          },
-          { Origin: "http://localhost:5173", "X-CSRF-Token": csrf },
-        )
-      ).status,
-      200,
-    );
-    assert.equal(
-      await store.checkAccess({
-        tenantId: "t2",
-        companyCode: "A",
-        userId: "1",
-      }),
-      null,
-    );
-    assert.equal(
-      await store.checkAccess({
-        tenantId: "t1",
-        companyCode: "B",
-        userId: "1",
-      }),
-      null,
-    );
-    assert.ok(
-      await store.checkAccess({
-        tenantId: "t1",
-        companyCode: "A",
-        userId: "1",
-      }),
-    );
-    await store.setRestriction({
-      scope: "user",
-      tenantId: "t1",
-      companyCode: "B",
-      userId: "1",
-      restricted: true,
-    });
-    assert.equal(
-      await store.checkAccess({
-        tenantId: "t1",
-        companyCode: "B",
-        userId: "2",
-      }),
-      null,
-    );
-    let status, payload;
-    const res = {
-      status(n) {
-        status = n;
-        return this;
-      },
-      json(p) {
-        payload = p;
-        return this;
-      },
-    };
-    assert.equal(
-      await enforceAccess(
-        { tenantId: "t1", companyCode: "A", userId: "1" },
-        res,
-        store,
-      ),
-      false,
-    );
-    assert.equal(status, 403);
-    assert.equal(payload.code, "ACCESS_RESTRICTED");
-    assert.equal(
-      await enforceAccess({ tenantId: "t1", userId: "1" }, res, store),
-      false,
-    );
-    assert.equal(status, 401);
-    await enforceAccess(
-      { tenantId: "t1", companyCode: "A", userId: "1" },
-      res,
-      {
-        checkAccess: async () => {
-          throw Error("offline");
-        },
-      },
-    );
-    assert.equal(status, 503);
-    assert.equal(
-      (
-        await req(
-          "/restrictions",
-          "PUT",
-          {
-            scope: "company",
-            tenantId: "t1",
-            companyCode: "",
-            restricted: true,
-            reason: "Default company",
-          },
-          { Origin: "http://localhost:5173", "X-CSRF-Token": csrf },
-        )
-      ).status,
-      200,
-    );
-    assert.ok(
-      await store.checkAccess({
-        tenantId: "t1",
-        companyCode: "",
-        userId: "default-user",
-      }),
-    );
-    assert.equal(
-      await store.checkAccess({
-        tenantId: "t1",
-        companyCode: "C",
-        userId: "default-user",
-      }),
-      null,
-    );
-    assert.equal(
-      await store.checkAccess({
-        tenantId: "t2",
-        companyCode: "",
-        userId: "default-user",
-      }),
-      null,
-    );
+    // Historical rows must not become active again or be mutated by old panels.
+    restrictions.push({scope:'user',tenantId:'t1',companyCode:'A',userId:'1',restricted:true});
+    for (const path of ['/restrictions', '/apps/pos/restrictions']) {
+      const result = await req(path, 'PUT', {scope:'user',tenantId:'t1',companyCode:'A',userId:'1',restricted:true}, {Origin:'http://localhost:5173','X-CSRF-Token':csrf});
+      assert.equal(result.status, 410);
+      assert.equal((await result.json()).code, 'POS_RESTRICTIONS_DISABLED');
+    }
+    assert.equal(restrictions.length, 1);
+    const restrictionList = await (await req('/restrictions')).json();
+    assert.deepEqual(restrictionList.restrictions, []);
+    assert.equal(restrictionList.restrictionsEnabled, false);
     const saved = cookie;
     cookie =
       "cherrys_admin=" +
