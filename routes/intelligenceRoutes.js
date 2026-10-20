@@ -4,6 +4,7 @@ const controller = require("../controllers/intelligenceController");
 const router = express.Router();
 router.use(verifyToken);
 router.post("/plan", controller.plan);
+router.post("/assistant/plan", controller.toolPlan);
 router.post("/explain", controller.explain);
 router.post("/forecast/charts", controller.forecastCharts);
 router.post("/repair", controller.repair);

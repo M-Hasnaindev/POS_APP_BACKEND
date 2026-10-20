@@ -371,4 +371,5 @@ async function forecastCharts(body) {
   return {series:validated,generatedAt:new Date().toISOString(),source,notice:source === 'statistical' ? 'Historical estimate shown while AI is unavailable.' : undefined,method:source === 'ai' ? 'AI-selected forecasting method; amounts calculated from synchronized historical periods' : 'Weighted historical estimate; AI selection unavailable'};
 }
 
-module.exports = { createPlan, createReportPlan, explain, repairPlan, validateSql, safeSchema, forecastCharts };
+const createAssistantToolPlan = body => require('./assistantTools').planAssistant(body, chat, extractJson);
+module.exports = { createPlan, createReportPlan, explain, repairPlan, validateSql, safeSchema, forecastCharts, createAssistantToolPlan };

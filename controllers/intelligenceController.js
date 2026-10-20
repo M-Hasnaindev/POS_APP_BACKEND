@@ -11,6 +11,11 @@ exports.plan = async (req, res) => {
   catch (error) { console.error("ASSISTANT PLAN ERROR:", error.message); return res.status(error.status || 500).json({ success: false, message: error.message || "Unable to plan this question" }); }
 };
 
+exports.toolPlan = async (req, res) => {
+  try { return res.json({ success: true, plan: await service.createAssistantToolPlan(await bodyWithPermissions(req)) }); }
+  catch (error) { return res.status(error.status || 503).json({ success: false, message: 'Assistant could not resolve a safe report scope. Please specify dates and branch, then retry.' }); }
+};
+
 exports.explain = async (req, res) => {
   try { return res.json({ success: true, result: await service.explain(req.body || {}) }); }
   catch (error) { console.error("ASSISTANT EXPLAIN ERROR:", error.message); return res.status(error.status || 500).json({ success: false, message: error.message || "Unable to explain this result" }); }
