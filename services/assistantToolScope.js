@@ -47,6 +47,10 @@ function resolveScope(question, context, previousCalls = []) {
     const last = q.match(/\blast (\d{1,3}) (days|din)\b/);
     if (last && !periods.length && Number(last[1]) > 0) periods.push({ fromDate: iso(now - (Number(last[1]) - 1) * day), toDate: today });
   }
+  if (!periods.length) {
+    const single = [...q.matchAll(/\b\d{4}-\d{2}-\d{2}\b/g)];
+    if (single.length === 1 && /as on|as of|balance sheet|cash.*position|aging/.test(q)) periods = [{fromDate:single[0][0],toDate:single[0][0]}];
+  }
   if (!periods.length && followup && previousCalls.length === 1) periods = [{ fromDate: previousCalls[0].fromDate, toDate: previousCalls[0].toDate }];
   return { branches, periods };
 }
@@ -55,7 +59,18 @@ function enforceScope(plan, question, context, previousCalls) {
   const scope = resolveScope(question, context, previousCalls);
   if (scope.clarification) return { clarification: scope.clarification, calls: [] };
   if (plan.clarification) return plan;
-  const calls = plan.calls.map(call => ({ ...call, branches: scope.branches }));
+  const reportNames = [
+    [/cash[ &-]*(?:and[ -]*)?bank position/i,'cash-bank-position'],
+    [/cash[ -]*flow/i,'daily-cash-bank-flow'],
+    [/balance[ -]*sheet/i,'balance-sheet'],
+    [/trial[ -]*balance(?![ -]*(?:six|6))/i,'trial-balance'],
+    [/trial[ -]*balance[ -]*(?:six|6)/i,'trial-balance-six-column'],
+    [/receivable[ -]*aging/i,'receivable-aging'],
+    [/payable[ -]*aging/i,'payable-aging'],
+    [/chart of accounts/i,'chart-of-accounts'],
+    [/accounting[ -]*ledger/i,'accounting-ledger'],
+  ].filter(([pattern]) => pattern.test(question)).map(([,id])=>id);
+  const calls = plan.calls.map(call => ({ ...call, ...(call.tool === 'accountingReport' && reportNames.length === 1 ? {reportId:reportNames[0]} : {}), branches: scope.branches }));
   const stock = calls.every(call => call.tool.startsWith('stock'));
   let periods = scope.periods;
   if (stock) {
@@ -66,6 +81,7 @@ function enforceScope(plan, question, context, previousCalls) {
     const saved = context.coverage?.find(row => row.Dataset === 'sales');
     periods = saved ? [{ fromDate: String(saved.FromDate).slice(0, 10), toDate: String(saved.ToDate).slice(0, 10) }] : [];
   }
+  if (!periods.length && calls.every(call => call.reportId === 'chart-of-accounts')) periods = [{fromDate:context.today,toDate:context.today}];
   if (!periods.length) return { clarification: 'Exact start/end dates ya month + year batayein. Date range guess nahi karunga.', calls: [] };
   if (periods.length !== 1 && periods.length !== calls.length) return { clarification: 'Comparison ke dono periods aur metric specify karein.', calls: [] };
   return { clarification: '', calls: calls.map((call, index) => ({ ...call, ...periods[periods.length === 1 ? 0 : index] })) };
