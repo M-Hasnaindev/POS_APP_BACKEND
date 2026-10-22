@@ -19,5 +19,11 @@ const context={branches:[{Branch:'A',BranchName:'Branch A'}],coverage:[]};
  const {enforceScope}=require('../services/assistantToolScope');
  const position=enforceScope({calls:[{...call,reportId:'daily-cash-bank-flow'}]},'as on 2026-09-30 cash bank position',{...context,today:'2026-10-20'},[]);
  assert.equal(position.calls[0].reportId,'cash-bank-position');
+ for(const [question,date] of [['Account Inquiry',null],['Account Inquiry as on 2026-09-30','2026-09-30'],['Account Inquiry 30 September 2026','2026-09-30'],['Account Inquiry 30/09/2026','2026-09-30']]) {
+  const result=await planAssistant({question,permissions,context},()=>{throw Error('Account Inquiry must not ask model for missing start date');},JSON.parse);
+  assert.equal(result.calls[0].tool,'accountInquiry');
+  assert.equal(result.calls[0].fromDate,result.calls[0].toDate);
+  if(date)assert.equal(result.calls[0].toDate,date);
+ }
  console.log('PASS: common Roman Urdu/English sales bypass, accounting whitelist, as-on dates, bounded schema repair, date-only answer rejected');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -29,6 +29,9 @@ function resolveScope(question, context, previousCalls = []) {
     if (dates.length === 2) {
       const values = dates.map(match => `${match[3]}-${String(months.split('|').indexOf(match[2]) + 1).padStart(2, '0')}-${match[1].padStart(2, '0')}`);
       periods = [{ fromDate: values[0], toDate: values[1] }];
+    } else if (dates.length && /account.*(?:inquiry|enquiry)/.test(q)) {
+      const match=dates[0], value=`${match[3]}-${String(months.split('|').indexOf(match[2])+1).padStart(2,'0')}-${match[1].padStart(2,'0')}`;
+      periods=[{fromDate:value,toDate:value}];
     } else if (dates.length) return { clarification: 'Start aur end date dono batayein.' };
   }
   if (!periods.length) {
@@ -49,7 +52,11 @@ function resolveScope(question, context, previousCalls = []) {
   }
   if (!periods.length) {
     const single = [...q.matchAll(/\b\d{4}-\d{2}-\d{2}\b/g)];
-    if (single.length === 1 && /as on|as of|balance sheet|cash.*position|aging/.test(q)) periods = [{fromDate:single[0][0],toDate:single[0][0]}];
+    if (single.length === 1 && /as on|as of|balance sheet|cash.*position|aging|account.*(?:inquiry|enquiry)/.test(q)) periods = [{fromDate:single[0][0],toDate:single[0][0]}];
+  }
+  if (!periods.length && /account.*(?:inquiry|enquiry)/.test(q)) {
+    const d=q.match(/\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b/);
+    if(d){const value=`${d[3]}-${d[2].padStart(2,'0')}-${d[1].padStart(2,'0')}`;periods=[{fromDate:value,toDate:value}];}
   }
   if (!periods.length && followup && previousCalls.length === 1) periods = [{ fromDate: previousCalls[0].fromDate, toDate: previousCalls[0].toDate }];
   return { branches, periods };
@@ -80,6 +87,10 @@ function enforceScope(plan, question, context, previousCalls) {
   } else if (!periods.length && /\bavailable (data|period)\b/i.test(question) && calls.every(call => call.tool.startsWith('sales'))) {
     const saved = context.coverage?.find(row => row.Dataset === 'sales');
     periods = saved ? [{ fromDate: String(saved.FromDate).slice(0, 10), toDate: String(saved.ToDate).slice(0, 10) }] : [];
+  }
+  if (calls.every(call => call.tool === 'accountInquiry')) {
+    const date = periods.length ? periods[periods.length-1].toDate : context.today;
+    periods = [{fromDate:date,toDate:date}];
   }
   if (!periods.length && calls.every(call => call.reportId === 'chart-of-accounts')) periods = [{fromDate:context.today,toDate:context.today}];
   if (!periods.length) return { clarification: 'Exact start/end dates ya month + year batayein. Date range guess nahi karunga.', calls: [] };
