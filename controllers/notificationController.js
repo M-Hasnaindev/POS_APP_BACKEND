@@ -1,3 +1,4 @@
+const webPushService = require('../services/webPushService');
 const crypto = require("crypto");
 const { sql, getPoolForTenant, sendDatabaseError } = require("../config/db");
 const { tenants } = require("../config/tenants");
@@ -479,6 +480,8 @@ async function ensurePushTables(db) {
     // before executing ALTER TABLE, so these must be added before any statement
     // in a later batch references them.
     await db.request().query(`
+      IF COL_LENGTH('dbo.MobilePushTokens', 'WebPushSubscription') IS NULL
+        ALTER TABLE dbo.MobilePushTokens ADD WebPushSubscription NVARCHAR(MAX) NULL;
       IF COL_LENGTH('dbo.MobilePushTokens', 'PushFromDate') IS NULL
         ALTER TABLE dbo.MobilePushTokens ADD PushFromDate DATETIME2 NULL;
 
@@ -656,7 +659,13 @@ exports.updateNotificationPreferences = async (req, res) => {
 
 exports.registerPushToken = async (req, res) => {
   try {
-    const expoPushToken = text(req.body?.expoPushToken);
+    let expoPushToken = text(req.body?.expoPushToken);
+    let webSubscription = null;
+    if (req.body?.platform === "web") {
+      if (!webPushService.configured()) return res.status(503).json({success:false,message:"Web push is not configured on the server"});
+      try { webSubscription = webPushService.validateSubscription(req.body.subscription); } catch { return res.status(400).json({success:false,message:"Invalid web push subscription"}); }
+      expoPushToken = webPushService.tokenFor(webSubscription);
+    } else if (expoPushToken.startsWith("WEB:")) return res.status(400).json({success:false,message:"Web subscription required"});
     const platform = text(req.body?.platform);
     console.log(
       `PUSH DEVICE REGISTER REQUEST [${req.user.tenantId}] user=${String(req.user.userId || "")} platform=${platform || "unknown"} provider=${isDirectFcmToken(expoPushToken) ? "fcm" : "expo"}`,
@@ -691,6 +700,7 @@ exports.registerPushToken = async (req, res) => {
       .input("companyCode", sql.NVarChar(100), String(req.user.companyCode || ""))
       .input("platform", sql.NVarChar(30), platform || null)
       .input("resetBaseline", sql.Bit, resetBaseline)
+      .input("webSubscription", sql.NVarChar(sql.MAX), webSubscription ? JSON.stringify(webSubscription) : null)
       .query(`
         MERGE dbo.MobilePushTokens AS T
         USING (SELECT @token AS ExpoPushToken) AS S
@@ -699,13 +709,14 @@ exports.registerPushToken = async (req, res) => {
           UserId = @userId,
           CompanyCode = @companyCode,
           Platform = @platform,
+          WebPushSubscription = @webSubscription,
           IsActive = 1,
           LastSeenAt = GETDATE(),
           PushFromDate = CASE WHEN @resetBaseline = 1 THEN GETDATE() ELSE ISNULL(T.PushFromDate, GETDATE()) END,
           LastPushCheckAt = CASE WHEN @resetBaseline = 1 THEN GETDATE() ELSE ISNULL(T.LastPushCheckAt, GETDATE()) END
         WHEN NOT MATCHED THEN INSERT
-          (ExpoPushToken, UserId, CompanyCode, Platform, IsActive, RegisteredAt, LastSeenAt, PushFromDate, LastPushCheckAt)
-          VALUES (@token, @userId, @companyCode, @platform, 1, GETDATE(), GETDATE(), GETDATE(), GETDATE());
+          (ExpoPushToken, UserId, CompanyCode, Platform, IsActive, RegisteredAt, LastSeenAt, PushFromDate, LastPushCheckAt, WebPushSubscription)
+          VALUES (@token, @userId, @companyCode, @platform, 1, GETDATE(), GETDATE(), GETDATE(), GETDATE(), @webSubscription);
       `);
 
     if (resetBaseline) {
@@ -717,7 +728,7 @@ exports.registerPushToken = async (req, res) => {
     console.log(
       `PUSH DEVICE REGISTERED [${req.user.tenantId}] user=${String(req.user.userId || "")} platform=${platform || "unknown"}`,
     );
-    return res.json({ success: true });
+    return res.json({ success: true, token: expoPushToken });
   } catch (err) {
     console.error("REGISTER PUSH TOKEN ERROR:", err.message);
     return res.status(500).json({ success: false, message: "Unable to register push notifications" });
@@ -765,7 +776,7 @@ exports.testPushNotification = async (req, res) => {
       },
     };
 
-    const [result] = await sendPushMessages([message]);
+    const [result] = await sendPushMessages([message], db);
     const ticket = result?.ticket || {};
     const provider = result?.provider || (isDirectFcmToken(storedToken) ? "fcm" : "expo");
 
@@ -782,7 +793,7 @@ exports.testPushNotification = async (req, res) => {
 
     // An Expo ticket only confirms queue acceptance. Poll the actual provider
     // receipt briefly so the in-app test catches stale/uninstalled devices.
-    let deliveryStatus = provider === "fcm" ? "delivered-to-provider" : "pending";
+    let deliveryStatus = provider !== "expo" ? "delivered-to-provider" : "pending";
     if (provider === "expo" && ticket.id) {
       for (let attempt = 0; attempt < 4; attempt += 1) {
         await wait(1000);
@@ -950,19 +961,22 @@ async function sendExpoPush(messages) {
   return results;
 }
 
-async function sendPushMessages(messages) {
+async function sendPushMessages(messages, db) {
   if (!messages.length) return [];
 
   const combined = new Array(messages.length);
   const expoEntries = [];
   const fcmEntries = [];
+  const webEntries = [];
 
   messages.forEach((message, index) => {
-    if (isDirectFcmToken(message.to)) fcmEntries.push({ index, message });
+    if (message.to.startsWith("WEB:")) webEntries.push({index,message});
+    else if (isDirectFcmToken(message.to)) fcmEntries.push({ index, message });
     else expoEntries.push({ index, message });
   });
 
   await Promise.all([
+    webEntries.length ? webPushService.sendWebPush(db, sql, webEntries.map(e=>e.message)).then(results=>results.forEach((result,i)=>{combined[webEntries[i].index]=result;})) : Promise.resolve(),
     expoEntries.length
       ? sendExpoPush(expoEntries.map((entry) => entry.message)).then((expoResults) => {
           expoResults.forEach((result, position) => {
@@ -1238,7 +1252,7 @@ async function processTenantPushes(tenantId) {
     const token = text(device.ExpoPushToken);
     const isExpoToken = /^Expo(nent)?PushToken\[.+\]$/.test(token);
     const isFcmToken = isDirectFcmToken(token);
-    if (!isExpoToken && !isFcmToken) continue;
+    if (!isExpoToken && !isFcmToken && !token.startsWith("WEB:")) continue;
     const preferenceKey = `${text(device.UserId).toLowerCase()}|${text(device.CompanyCode).toLowerCase()}`;
     const preferences = preferenceMap.get(preferenceKey) || defaultNotificationPreferences();
     if (preferences.suppressAll) continue;
@@ -1294,7 +1308,7 @@ async function processTenantPushes(tenantId) {
   let failedCount = 0;
 
   if (messages.length) {
-    const deliveryResults = await sendPushMessages(messages);
+    const deliveryResults = await sendPushMessages(messages, db);
     const successfulLogs = [];
     const invalidTokens = new Set();
     const retryableFailures = [];
@@ -1307,7 +1321,7 @@ async function processTenantPushes(tenantId) {
           successfulLogs.push({
             ...pending,
             ticketId: text(ticket.id) || null,
-            receiptStatus: result?.provider === "fcm" ? "ok" : "pending",
+            receiptStatus: result?.provider !== "expo" ? "ok" : "pending",
           });
         }
         sentCount += 1;

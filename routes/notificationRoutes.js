@@ -19,6 +19,7 @@ const router = express.Router();
 router.get("/process-push", processPushNotifications);
 
 router.use(verifyToken);
+router.get("/web-push-config", (_req,res) => { const service=require("../services/webPushService"); res.json({success:true,publicKey:service.configured()?process.env.WEB_PUSH_PUBLIC_KEY:null}); });
 router.get("/recent", getRecentNotifications);
 router.get("/preferences", getNotificationPreferences);
 router.put("/preferences", updateNotificationPreferences);

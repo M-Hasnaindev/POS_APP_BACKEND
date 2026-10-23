@@ -33,3 +33,12 @@ and create a repository secret named `CRON_SECRET`. Its value must exactly match
 the `CRON_SECRET` configured for the Vercel project. After the backend branch is
 pushed, run **Business push worker** once from the Actions page and confirm the
 JSON response reports `success: true`.
+
+## Browser push (POS web)
+- Set WEB_PUSH_PUBLIC_KEY, WEB_PUSH_PRIVATE_KEY, WEB_PUSH_SUBJECT in the backend Production environment before deploying this release. A VAPID pair was generated locally; keep the private key server-side and preserve the pair across releases.
+- Deploy backend and regenerate/upload the web publish together. Export includes pos-notifications-sw.js and manifest.webmanifest. Worker must return JavaScript over HTTPS, not an HTML fallback.
+- Signed-in users enable notifications in Profile using Allow/Register. Do not request browser permission automatically on startup. iPhone/iPad users need a Home Screen installation (iOS/iPadOS 16.4+).
+- Web subscriptions use WEB: endpoint hashes in existing device records, a separate subscription column, the existing tenant/user routing, preferences, dedupe logs and five-minute push worker.
+- Successful web delivery means accepted by the browser push provider, not proof that a person saw the notification. Browser/OS policy, Focus and connectivity can delay it.
+- Logout unsubscribes the browser and unregisters the device. Expired endpoints return DeviceNotRegistered and are deactivated by the existing worker.
+- Validate on an HTTPS site: Allow in Profile, trigger an authorized test notification, verify with page open, then close the page and repeat. Verify sign-out stops delivery. Do not send tests to unrelated client devices.
