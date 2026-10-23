@@ -3,6 +3,7 @@ const {loadIncomeStatement}=require('./incomeStatementSource');
 const {resolveCompanyStartDate}=require('./accountingService');
 const {loadAccountingFilterOptions}=require('./accountingFilterOptions');
 const {createIncomeReportCache}=require('./incomeReportCache');
+const {withSqlDeadline}=require('./sqlDeadline');
 const cachedIncomeReport=createIncomeReportCache();
 const error=(message,statusCode=422,code='INVALID_REPORT_FILTER')=>Object.assign(new Error(message),{statusCode,code});
 const TYPES={'income-statement':'I','accounting-ledger':'L','trial-balance':'T','trial-balance-six-column':'T','account-movement':'M','audit-trial':'A','month-wise-account':'MWR','month-wise-expense':'MWR','month-wise-cash-bank':'MWR','daily-cash-bank-flow':'DAILYCASH','party-wise-collection':'PWC','party-wise-payment':'PWP','receivable-aging':'BILLWISE','payable-aging':'BILLWISE','chart-of-accounts':'COA','cash-bank-position':'B'};
@@ -68,11 +69,13 @@ async function executeReportPlan(pool,context,id,plan,options,deadline){
   if(plan.procedure==='AccProc')plan.params[5]=context.userId;
   const transaction=new sql.Transaction(pool);let begun=false;
   try{
-   await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);begun=true;
+   // Match the ERP's committed-read semantics. SERIALIZABLE kept range locks
+   // across every source table until the report finished, blocking live sales.
+   await transaction.begin(sql.ISOLATION_LEVEL.READ_COMMITTED);begun=true;
    await new sql.Request(transaction).query("DECLARE @r int; EXEC @r=sys.sp_getapplock @Resource='POSAccountingReports',@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=10000; IF @r<0 THROW 51000,'Report is busy. Retry shortly.',1;");
    if(plan.procedure==='AccProc')await new sql.Request(transaction).input('userId',sql.NVarChar(100),context.userId).query("IF OBJECT_ID('TmpStores') IS NOT NULL DELETE FROM TmpStores WHERE UserID=@userId; IF OBJECT_ID('Tmp_Branch') IS NOT NULL DELETE FROM Tmp_Branch WHERE UserID=@userId;");
    const request=new sql.Request(transaction);plan.params.forEach((value,index)=>request.input('p'+index,sql.NVarChar(sql.MAX),value));request.timeout=deadline?Math.max(1,Math.min(80000,deadline-Date.now())):80000;
-   const result=await request.query('EXEC '+plan.procedure+' '+plan.params.map((_,i)=>'@p'+i).join(', '));rows=result.recordset||[];
+   const result=await withSqlDeadline(request,request.timeout,()=>request.query('EXEC '+plan.procedure+' '+plan.params.map((_,i)=>'@p'+i).join(', ')));rows=result.recordset||[];
    if(plan.procedure==='AccProc'){
     const mappings=await new sql.Request(transaction).input('userId',sql.NVarChar(100),context.userId).input('company',sql.NVarChar(50),context.companyCode).query("IF OBJECT_ID('Tmp_Branch') IS NOT NULL SELECT [Row],BranchCode,BranchName FROM Tmp_Branch WHERE UserID=@userId ORDER BY [Row]; ELSE SELECT 1 WHERE 1=0; IF OBJECT_ID('TmpStores') IS NOT NULL SELECT [Row],StoreCode,StoreName FROM TmpStores WHERE UserID=@userId AND CompanyCode=@company ORDER BY [Row]; ELSE SELECT 1 WHERE 1=0;");
     columnMappings.branches=mappings.recordsets?.[0]||[];columnMappings.accounts=mappings.recordsets?.[1]||[];

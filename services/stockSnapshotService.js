@@ -220,7 +220,7 @@ async function resolveCompanyCode(pool, { companyCode, requestedCompanyCode, use
   throw error;
 }
 
-async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, userId, fromDate, toDate, branch = "", barcodeFrom = "", barcodeTo = "" }, onBatch) {
+async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, userId, fromDate, toDate, branch = "", barcodeFrom = "", barcodeTo = "", transaction, signal }, onBatch) {
   const from = parseDateOnly(fromDate);
   const to = parseDateOnly(toDate);
   if (!from || !to || from > to) {
@@ -241,7 +241,7 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
   const enrichment = barcodeFrom || barcodeTo
     ? await loadStockEnrichment(pool, effectiveCompanyCode, barcodeFrom, barcodeTo)
     : null;
-  const request = pool.request();
+  const request = transaction ? new sql.Request(transaction) : pool.request();
   request.timeout = 240000;
   request
     .input("CompanyCode", sql.VarChar(6), effectiveCompanyCode)
@@ -269,13 +269,15 @@ async function getStockSnapshot({ tenantId, companyCode, requestedCompanyCode, u
     .input("IsNonInventory", sql.NVarChar(1), "Y");
 
   const rows = [];
-  const streamed = await streamRows(request, () => request.execute("dbo.POSStockMovement"), async batch => {
+  const cancel=()=>request.cancel(); signal?.addEventListener("abort",cancel,{once:true});
+  let streamed;
+  try {if(signal?.aborted)throw new Error("Sync cancelled");streamed = await require("./sqlDeadline").withSqlDeadline(request,240000,()=>streamRows(request, () => request.execute("dbo.POSStockMovement"), async batch => {
     const enriched = enrichment
       ? applyStockEnrichment(batch, enrichment)
       : await enrichProductNames(pool, await enrichBranchNames(pool, batch, effectiveCompanyCode));
     if (onBatch) await onBatch(enriched);
     else rows.push(...enriched);
-  }, hasBusinessData);
+  }, hasBusinessData));}finally{signal?.removeEventListener("abort",cancel);}
   console.log("[StockSnapshot] Completed", {
     tenantId,
     companyCode: effectiveCompanyCode,

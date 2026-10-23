@@ -1,108 +1,44 @@
-const zlib = require("zlib");
-const { promisify } = require("util");
-const {
-  getStockSnapshot,
-} = require("../services/stockSnapshotService");
-const { findJob, readPage } = require("../services/syncPageStore");
-const { startStockJob, getStockJob } = require("../services/stockSyncJobs");
-const { isTransientDatabaseError } = require("../config/db");
-
-const gzip = promisify(zlib.gzip);
-
-exports.getSnapshot = async (req, res) => {
-  try {
-    const { fromDate, toDate } = req.query;
-    const snapshot = await getStockSnapshot({
-      tenantId: req.user.tenantId,
-      companyCode: req.user.companyCode,
-      requestedCompanyCode: req.headers["x-company-code"],
-      userId: req.user.userId,
-      fromDate,
-      toDate,
-    });
-    const payload = {
-      success: true,
-      data: snapshot.rows,
-      count: snapshot.rows.length,
-      sourceCount: snapshot.procedureRows,
-      dateRange: { from: fromDate, to: toDate },
-      generatedAt: new Date().toISOString(),
-      durationMs: snapshot.durationMs,
-    };
-
-    if (/\bgzip\b/i.test(String(req.headers["accept-encoding"] || ""))) {
-      const compressed = await gzip(Buffer.from(JSON.stringify(payload)), { level: 6 });
-      res.set("Content-Type", "application/json; charset=utf-8");
-      res.set("Content-Encoding", "gzip");
-      res.set("Vary", "Accept-Encoding");
-      return res.status(200).send(compressed);
-    }
-    return res.json(payload);
-  } catch (error) {
-    console.error("STOCK SNAPSHOT ERROR:", error.message);
-    const status = ["INVALID_DATE_RANGE", "COMPANY_CODE_REQUIRED"].includes(error.code) ? 400 : 500;
-    return res.status(status).json({
-      success: false,
-      message: status === 400 ? error.message : "Unable to prepare stock snapshot",
-    });
-  }
-};
-
-function stockOptions(req) {
-  return {
-    tenantId: req.user.tenantId,
-    companyCode: req.user.companyCode,
-    requestedCompanyCode: req.headers["x-company-code"],
-    userId: req.user.userId,
-    fromDate: req.query.fromDate,
-    toDate: req.query.toDate,
-  };
+const { sql, getPoolForTenant } = require('../config/db');
+const { getStockSnapshot } = require('../services/stockSnapshotService');
+const { getBranchPriceAccess } = require('../services/branchPriceAccessService');
+const { sendSyncStream } = require('../services/httpSyncStream');
+exports.getRanges = async (req, res) => { try {
+    const pool = await getPoolForTenant(req.user.tenantId);
+    const r = await pool.request().query("WITH Codes AS(SELECT DISTINCT BarCode FROM dbo.BarcodeView WHERE BarCode IS NOT NULL), Numbered AS(SELECT BarCode,(ROW_NUMBER() OVER(ORDER BY BarCode)-1)/1000 bucket FROM Codes) SELECT MIN(BarCode) barcodeFrom,MAX(BarCode) barcodeTo FROM Numbered GROUP BY bucket ORDER BY bucket");
+    res.json({ success: true, ranges: r.recordset });
 }
-
-exports.startSnapshotJob = async (req, res) => {
-  try {
-    const options = stockOptions(req);
-    const job = await startStockJob(options);
-    return res.status(job.status === "ready" ? 200 : 202).json({ success: true, ...job });
-  } catch (error) {
-    console.error("STOCK SNAPSHOT JOB START ERROR:", error?.message || error);
-    const invalid = ['INVALID_DATE_RANGE', 'COMPANY_CODE_REQUIRED'].includes(error?.code);
-    return res.status(invalid ? 400 : 503).json({ success: false, message: invalid ? error.message : "Stock sync is temporarily unavailable. Please retry." });
-  }
+catch (error) {
+    res.status(503).json({ success: false, message: 'Inventory ranges unavailable. Please retry.' });
+} };
+exports.streamSnapshot = async (req, res) => {
+    try {
+        const { tenantId, userId, companyCode } = req.user;
+        const { fromDate, toDate, barcodeFrom, barcodeTo } = req.query;
+        if (typeof barcodeFrom !== 'string' || !barcodeFrom || typeof barcodeTo !== 'string' || !barcodeTo || barcodeFrom.length > 100 || barcodeTo.length > 100)
+            return res.status(400).json({ success: false, message: 'Valid barcode bounds are required' });
+        const access = await getBranchPriceAccess({ tenantId, userId, companyCode });
+        const branches = access.branches.map(b => String(b.BranchCode).trim()).filter(Boolean);
+        if (!branches.length)
+            return res.status(403).json({ success: false, message: 'No authorized inventory branches' });
+        const pool = await getPoolForTenant(tenantId);
+        return sendSyncStream(req, res, async (onBatch, signal) => {
+            const tx = new sql.Transaction(pool);
+            await tx.begin(sql.ISOLATION_LEVEL.READ_COMMITTED);
+            try {
+                await new sql.Request(tx).query("DECLARE @r int; EXEC @r=sys.sp_getapplock @Resource='POSAccountingReports',@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=10000; IF @r<0 THROW 51000,'Report is busy',1;");
+                return await getStockSnapshot({ tenantId, userId, companyCode, requestedCompanyCode: req.headers['x-company-code'], fromDate, toDate, barcodeFrom, barcodeTo, branch: ',' + branches.join(',') + ',', transaction: tx, signal }, onBatch);
+            }
+            finally {
+                await tx.rollback();
+            }
+        });
+    }
+    catch (error) {
+        res.status(error.statusCode || 503).json({ success: false, message: 'Inventory download unavailable. Please retry.' });
+    }
 };
-
-exports.getSnapshotJobStatus = async (req, res) => {
-  try {
-  const job = await getStockJob(req.params.jobId, req.user.tenantId, req.user.userId);
-  if (!job) return res.status(404).json({ success: false, message: "Stock sync job was not found" });
-  return res.json({ success: true, ...job });
-  } catch (error) {
-    const log = isTransientDatabaseError(error) ? console.warn : console.error;
-    log('[StockSync] Status temporarily unavailable:', error.code || error.name);
-    res.set('Retry-After', '3');
-    return res.status(503).json({ success: false, code: 'STOCK_STATUS_TEMPORARILY_UNAVAILABLE', retryable: true, message: 'Stock status is temporarily unavailable. Please retry.' });
-  }
-};
-
-exports.getSnapshotJobPage = async (req, res) => {
-  try {
-  const job = await findJob(req.params.jobId, req.user.tenantId, req.user.userId);
-  if (!job) return res.status(404).json({ success: false, message: "Stock sync job was not found" });
-  if (job.status === "failed") return res.status(503).json({ success: false, message: job.error });
-  if (job.status !== "ready") return res.status(409).json({ success: false, message: "Stock sync is still processing" });
-  const payload = {
-    success: true,
-    ...await readPage(job, req.query.page),
-    sourceCount: job.sourceCount,
-    generatedAt: job.generatedAt,
-  };
-  if (/\bgzip\b/i.test(String(req.headers['accept-encoding'] || ''))) {
-    res.set('Content-Encoding', 'gzip'); res.set('Content-Type', 'application/json'); res.set('Vary', 'Accept-Encoding');
-    return res.send(await gzip(Buffer.from(JSON.stringify(payload))));
-  }
-  return res.json(payload);
-  } catch (error) {
-    console.error('[StockSync] Page unavailable:', error.code || error.name);
-    return res.status(503).json({ success: false, message: 'Stock page is temporarily unavailable. Please retry.' });
-  }
-};
+const retired = (req, res) => res.status(410).json({ success: false, code: 'LOCAL_SYNC_REQUIRED', message: 'Please update the app to use local sync.' });
+exports.getSnapshot = retired;
+exports.startSnapshotJob = retired;
+exports.getSnapshotJobStatus = retired;
+exports.getSnapshotJobPage = retired;

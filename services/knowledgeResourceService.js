@@ -209,7 +209,7 @@ async function getManifest({ tenantId, companyCode, allowedBranches = [], isAdmi
     schemaHash: catalog.schemaHash,
     companyCode: String(companyCode || "").trim(),
     refreshPolicy: resourceRefreshPolicy(),
-    durableDelta: require('./resourceDeltaStore').enabled(),
+    durableDelta: false,
     requiredCount: APPROVED_TABLES.length,
     resources: catalog.resources.map((item) => ({ ...item, syncStrategy: item.changeTrackingEnabled && item.columns.some((column) => column.isPrimaryKey) ? "change_tracking" : "verified_snapshot" })),
     unavailable: catalog.resources.filter((item) => item.objectType === "UNAVAILABLE").map((item) => item.name),
@@ -298,21 +298,6 @@ async function getResourcePage({ tenantId, companyCode, allowedBranches = [], is
   };
 }
 
-async function deltaContext(args) {
-  const catalog=await readCatalog(args.tenantId,false);
-  const canonical=canonicalTableName(args.tableName);
-  const table=catalog.resources.find(item=>item.name.toLowerCase()===canonical.toLowerCase());
-  if(!table || table.objectType==='UNAVAILABLE')throw Object.assign(new Error('Resource table unavailable'),{status:404});
-  return {...args,table,schemaHash:catalog.schemaHash,allowedBranches:args.allowedBranches||[],catalog};
-}
-async function buildDeltaSnapshot(args) {
-  const context=await deltaContext(args);
-  return require('./resourceDeltaStore').step(context,
-    offset=>getResourcePage({...args,page:1,pageSize:10000,rowOffset:offset}),
-    ()=>scopedFingerprint({...context,force:true}));
-}
-async function readDeltaSnapshot(args) {
-  const context=await deltaContext(args);
-  return require('./resourceDeltaStore').changes(context,args.version,args.previous,args.cursor);
-}
+function removedSnapshotStore() { throw Object.assign(new Error('Server snapshot storage has been retired. Update the app to use local sync.'), {status:410,code:'LOCAL_SYNC_REQUIRED'}); }
+const buildDeltaSnapshot=removedSnapshotStore,readDeltaSnapshot=removedSnapshotStore;
 module.exports = { APPROVED_TABLES, PACK_VERSION, getManifest, getResourceChanges, getResourcePage, resourceRefreshPolicy, buildDeltaSnapshot, readDeltaSnapshot };

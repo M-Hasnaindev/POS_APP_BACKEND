@@ -160,7 +160,7 @@ function trimCache() {
   }
 }
 
-async function executeAccountingSnapshot(pool, { fromDate, toDate, userId, companyCode, reportType = "L" }, onBatch) {
+async function executeAccountingSnapshot(pool, { fromDate, toDate, userId, companyCode, reportType = "L", signal }, onBatch) {
   const request = pool.request();
   request.timeout = 240000;
   request
@@ -169,7 +169,7 @@ async function executeAccountingSnapshot(pool, { fromDate, toDate, userId, compa
     .input("reportType", sql.VarChar(30), reportType)
     .input("userId", sql.VarChar(100), userId)
     .input("companyCode", sql.VarChar(50), companyCode);
-  if (onBatch) return streamRows(request, () => request.query(ACC_PROC_SQL), onBatch);
+  if (onBatch) {const cancel=()=>request.cancel();signal?.addEventListener('abort',cancel,{once:true});try{if(signal?.aborted)throw new Error('Sync cancelled');return await require('./sqlDeadline').withSqlDeadline(request,240000,()=>streamRows(request,()=>request.query(ACC_PROC_SQL),onBatch));}finally{signal?.removeEventListener('abort',cancel);}}
   const result = await request.query(ACC_PROC_SQL);
   return Array.isArray(result.recordset) ? result.recordset : [];
 }

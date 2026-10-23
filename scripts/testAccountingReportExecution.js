@@ -4,7 +4,7 @@ const lookup=require('../services/accountingFilterOptions');
 const original={Transaction:db.sql.Transaction,Request:db.sql.Request,load:lookup.loadAccountingFilterOptions};
 let calls=[],fail=false;
 lookup.loadAccountingFilterOptions=async()=>({branches:[{BranchCode:'01'}],accounts:[],levels:[{Row:0}]});
-class Transaction{async begin(){calls.push('begin');}async rollback(){calls.push('rollback');}}
+class Transaction{async begin(isolation){assert.equal(isolation,db.sql.ISOLATION_LEVEL.READ_COMMITTED);calls.push('begin');}async rollback(){calls.push('rollback');}}
 class Request{constructor(){this.params={};}input(k,t,v){this.params[k]=v;return this;}async query(q){calls.push(q);if(q.startsWith('EXEC AccProc')){assert.equal(this.params.p5,'USER1');assert.equal(this.params.p16,',01,');if(fail)throw new Error('database failure');return {recordset:[{ActCod:'1',Debit:5}]};}return {recordsets:[[],[]]};}}
 db.sql.Transaction=Transaction;db.sql.Request=Request;
 delete require.cache[require.resolve('../services/accountingReports')];

@@ -13,6 +13,7 @@ router.get("/filter-options", verifyToken, getAccountingFilterOptions);
 const { generateAccountingReport } = require("../controllers/accountingReportsController");
 router.post("/reports", verifyToken, generateAccountingReport);
 
+router.get('/records/stream',verifyToken,require('../controllers/accountingController').streamAccountingRecords);
 router.get("/records", verifyToken, getAccountingRecords);
 router.post("/records/jobs", verifyToken, startAccountingRecordsJob);
 router.get("/records/jobs/:jobId", verifyToken, getAccountingRecordsJobStatus);
