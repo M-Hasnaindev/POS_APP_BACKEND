@@ -73,10 +73,22 @@ function compile(code,filters,permissions){
  const check=stock
   ?'SELECT '+Object.keys(metrics).map(key=>'COALESCE(SUM('+key+'),0) AS '+key).join(',')+' FROM ('+base+' GROUP BY '+dimension+') grouped'
   :'SELECT '+Object.keys(metrics).map(key=>'COALESCE(SUM('+key+'),0) AS '+key).join(',')+',COUNT(DISTINCT BillKey) AS BillCount FROM (SELECT BillKey,'+additiveSums+' FROM '+table+' WHERE '+condition+' GROUP BY '+dimension+',BillKey) grouped';
+ const executiveQueries=[];
+ if(report.code==='GROW_sales-summary'){
+  const scopeCondition=where.filter(clause=>!clause.startsWith('date(BillDate) BETWEEN')).join(' AND ')||'1=1';
+  const fromDate=new Date(filters.fromDate+'T00:00:00.000Z'),toDate=new Date(filters.toDate+'T00:00:00.000Z');
+  const periodDays=Math.max(1,Math.round((toDate-fromDate)/86400000)+1),previousTo=new Date(fromDate.getTime()-86400000),previousFrom=new Date(previousTo.getTime()-(periodDays-1)*86400000);
+  const previousCondition='date(BillDate) BETWEEN '+quote(previousFrom.toISOString().slice(0,10))+' AND '+quote(previousTo.toISOString().slice(0,10))+' AND '+scopeCondition;
+  const breakdown=(kind,name,limit)=>{const group=dimensionFor(name),caption=labelFor(name);return"SELECT "+quote(kind)+" AS DimensionType,grouped.* FROM (SELECT "+caption+" AS Label,"+sums+" FROM "+table+" WHERE "+condition+" GROUP BY "+group+" ORDER BY NetSales DESC LIMIT "+limit+") grouped";};
+  executiveQueries.push(
+   {id:'previous_totals',purpose:'Previous equal period comparison',sql:'SELECT '+sums+' FROM '+table+' WHERE '+previousCondition},
+   {id:'executive_breakdowns',purpose:'Product, category and sales team intelligence',sql:[breakdown('product','BarCode',12),breakdown('category','CatagoryName',10),breakdown('sales_team','SalesmanName',12)].join(' UNION ALL ')},
+  );
+ }
  const assumptions=[stock?'Stock figures cover the Stock Room snapshot period shown in data coverage, not arbitrary historical dates.':'Profit = synced NetAmount minus transaction CostAmountofSales, matching Sales Dashboard; it is not net accounting profit.',
  'No forecast, target, guaranteed growth or exact stock age is inferred from missing data.',
  'Detail shows at most 500 groups; totals include the full selected scope.'];
- return {title:report.name,detailLevel:'detailed',needsClarification:false,clarification:'',queries:[{id:'totals',purpose:'Full selected scope',sql:totals},{id:'detail',purpose:(primaryName==='day'?'Time trend':'Primary business breakdown'),sql:detail},{id:'secondary',purpose:(secondaryName==='day'?'Time trend':'Supporting business mix'),sql:secondary},{id:'check',purpose:'Grouped reconciliation',sql:check}],visualization:{type:report.chartType,queryId:'detail',labelKey:'Label',valueKey:report.metrics[0]},assumptions};
+ return {title:report.name,detailLevel:'detailed',needsClarification:false,clarification:'',queries:[{id:'totals',purpose:'Full selected scope',sql:totals},{id:'detail',purpose:(primaryName==='day'?'Time trend':'Primary business breakdown'),sql:detail},{id:'secondary',purpose:(secondaryName==='day'?'Time trend':'Supporting business mix'),sql:secondary},{id:'check',purpose:'Grouped reconciliation',sql:check},...executiveQueries],visualization:{type:report.chartType,queryId:'detail',labelKey:'Label',valueKey:report.metrics[0]},assumptions};
 }
 function compileBreakdown(domain,dimension,filters,permissions){
  const stock=domain==='stock';let column=attributes[dimension];
