@@ -18,6 +18,7 @@ app.get("/", (_req, res) => {
       products: "/api/products",
       stock: "/api/stock",
       accounting: "/api/accounting",
+      payroll: "/api/payroll",
       resources: "/api/resources",
       intelligence: "/api/intelligence",
       versionUpdates: "/api/versionupdates",
@@ -53,6 +54,7 @@ app.use("/api/products", productRoutes);
 app.use("/api/versionupdates", versionUpdateRoutes);
 app.use("/api/stock", stockRoutes);
 app.use("/api/accounting", accountingRoutes);
+app.use("/api/payroll", require("./routes/payrollRoutes"));
 app.use("/api/resources", knowledgeRoutes);
 app.use("/api/intelligence", intelligenceRoutes);
 
