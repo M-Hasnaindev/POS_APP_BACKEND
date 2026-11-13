@@ -5,6 +5,8 @@ require("dotenv").config();
 const app = express();
 
 app.use(cors());
+// Mounted before the global JSON parser: it has its own larger body limit for chat history.
+app.use("/api/assistant-agent", require("./routes/assistantAgentRoutes"));
 app.use(express.json());
 
 app.get("/", (_req, res) => {
