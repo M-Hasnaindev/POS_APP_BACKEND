@@ -23,7 +23,7 @@ function dayDiff(from, to) {
 }
 
 // Dates and times are returned as plain text so the app shows the shop's wall-clock time unchanged.
-const CLOSING_COLUMNS = `
+const closingColumns = (hasCardReturn) => `
   M.TranNo, LTRIM(RTRIM(M.Branch)) AS Branch, ISNULL(MAX(B.BranchName), '') AS BranchName,
   LTRIM(RTRIM(ISNULL(M.CounterNo, ''))) AS CounterNo,
   CONVERT(char(10), M.DateFr, 23) AS DateFr, CONVERT(char(10), M.DateTo, 23) AS DateTo,
@@ -31,14 +31,16 @@ const CLOSING_COLUMNS = `
   LTRIM(RTRIM(ISNULL(M.EntryIP, ''))) AS EntryIP, LTRIM(RTRIM(ISNULL(M.Remarks, ''))) AS Remarks,
   M.FiveThousand, M.Thousand, M.FiveHundred, M.Hundred, M.Fifty, M.Twenty, M.Ten, M.Five, M.Two, M.One, M.Total,
   M.OpeningBal, M.TotCashSales, M.CashReturn, M.Payments, M.Receipts, M.Difference, M.NetCash,
-  M.CashSales, M.CardSales, M.CreditSales, M.SalesReturn, M.CreditReturn, M.CardReturn, M.NetSales, M.TotalQty,
+  M.CashSales, M.CardSales, M.CreditSales, M.SalesReturn, M.CreditReturn,
+  ${hasCardReturn ? "M.CardReturn" : "CAST(NULL AS decimal(18, 2))"} AS CardReturn, M.NetSales, M.TotalQty,
   M.NoBill, M.NoCancel, M.NoHold, M.NoUnpaid, M.Paid`;
 
-const CLOSING_GROUP = `
+const closingGroup = (hasCardReturn) => `
   M.TranNo, M.Branch, M.CounterNo, M.DateFr, M.DateTo, M.EntryDate, M.EntryBy, M.EntryIP, M.Remarks,
   M.FiveThousand, M.Thousand, M.FiveHundred, M.Hundred, M.Fifty, M.Twenty, M.Ten, M.Five, M.Two, M.One, M.Total,
   M.OpeningBal, M.TotCashSales, M.CashReturn, M.Payments, M.Receipts, M.Difference, M.NetCash,
-  M.CashSales, M.CardSales, M.CreditSales, M.SalesReturn, M.CreditReturn, M.CardReturn, M.NetSales, M.TotalQty,
+  M.CashSales, M.CardSales, M.CreditSales, M.SalesReturn, M.CreditReturn,
+  ${hasCardReturn ? "M.CardReturn," : ""} M.NetSales, M.TotalQty,
   M.NoBill, M.NoCancel, M.NoHold, M.NoUnpaid, M.Paid`;
 
 const getClosings = async (req, res) => {
@@ -54,6 +56,11 @@ const getClosings = async (req, res) => {
 
   try {
     const pool = await getPoolForTenant(req.user.tenantId);
+    // Older ERP schemas (including UROOJ TEST) have no CardReturn column.
+    // Inspect this tenant's schema; never create/alter source tables or invent
+    // a zero return amount for a field the source does not provide.
+    const schema = await pool.request().query("SELECT COL_LENGTH('PosClosing', 'CardReturn') AS cardReturnLength");
+    const hasCardReturn = schema.recordset[0]?.cardReturnLength != null;
     const request = pool.request()
       .input("companyCode", sql.VarChar(50), companyCode)
       .input("from", sql.Date, from)
@@ -62,13 +69,13 @@ const getClosings = async (req, res) => {
 
     // BranchList can hold more than one row per code, hence the GROUP BY with MAX(BranchName).
     const result = await request.query(`
-      SELECT ${CLOSING_COLUMNS}
+      SELECT ${closingColumns(hasCardReturn)}
       FROM PosClosing M
       LEFT JOIN BranchList B ON LTRIM(RTRIM(B.BranchCode)) = LTRIM(RTRIM(M.Branch))
       WHERE LTRIM(RTRIM(M.CompanyCode)) = @companyCode
         AND M.DateTo >= @from AND M.DateFr <= @to
         ${branch ? "AND LTRIM(RTRIM(M.Branch)) = @branch" : ""}
-      GROUP BY ${CLOSING_GROUP}
+      GROUP BY ${closingGroup(hasCardReturn)}
       ORDER BY M.DateTo DESC, M.EntryDate DESC`);
 
     res.json({ success: true, from, to, data: result.recordset, count: result.recordset.length });
