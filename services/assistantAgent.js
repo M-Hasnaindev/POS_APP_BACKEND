@@ -13,6 +13,7 @@
 const { once } = require("node:events");
 const Anthropic = require("@anthropic-ai/sdk");
 const { SYSTEM_PROMPT, TOOLS, TOOL_NAMES } = require("./assistantAgentPrompt");
+const usage = require("./assistantUsage");
 
 const AnthropicClient = Anthropic.default || Anthropic;
 const MODEL = String(process.env.ASSISTANT_MODEL || "claude-sonnet-5-5").trim();
@@ -26,7 +27,7 @@ let client = null;
 function getClient() {
   const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
   if (!apiKey) return null;
-  if (!client) client = new AnthropicClient({ apiKey, maxRetries: 2, timeout: 240000 });
+  if (!client) client = new AnthropicClient({ apiKey, maxRetries: 3, timeout: 240000 });
   return client;
 }
 
@@ -75,6 +76,26 @@ async function streamTurn(req, res) {
   const invalid = validateMessages(messages);
   if (invalid) return res.status(400).json({ success: false, code: "AI_BAD_REQUEST", message: invalid });
 
+  // Daily question limit: only a new question is counted, before Claude is called.
+  let quota = null;
+  if (usage.isNewQuestion(messages)) {
+    try {
+      quota = await usage.consumeQuestion(req.user);
+    } catch (error) {
+      // Do not block the assistant when the usage table cannot be reached.
+      console.error("[assistant-usage] check failed", error?.message || error);
+    }
+    if (quota && !quota.allowed) {
+      return res.status(429).json({
+        success: false,
+        code: "AI_DAILY_LIMIT",
+        message: `You have used all ${quota.limit} assistant questions for today. You can ask again after midnight.`,
+        quota: { limit: quota.limit, used: quota.used, remaining: 0, resetsAt: quota.resetsAt },
+      });
+    }
+  }
+  const quotaInfo = quota ? { limit: quota.limit, used: quota.used, remaining: quota.remaining, resetsAt: quota.resetsAt } : null;
+
   const abort = new AbortController();
   const onClose = () => { if (!res.writableEnded) abort.abort(); };
   res.on("close", onClose);
@@ -122,10 +143,13 @@ async function streamTurn(req, res) {
         stop_details: message.stop_details ?? null,
         usage: message.usage,
       },
+      ...(quotaInfo ? { quota: quotaInfo } : {}),
     });
   } catch (error) {
     if (!abort.signal.aborted) {
       console.error("[assistant-agent]", error?.status || "", error?.message || error);
+      // Claude could not answer, so this question does not use up the user's daily count.
+      if (quota?.counted) await usage.refundQuestion(req.user, quota.day);
       await write({ type: "error", ...errorPayload(error) });
     }
   } finally {
@@ -139,4 +163,13 @@ function status(_req, res) {
   res.json({ success: true, configured: Boolean(String(process.env.ANTHROPIC_API_KEY || "").trim()), model: MODEL });
 }
 
-module.exports = { streamTurn, status, validateMessages, errorPayload };
+async function quotaStatus(req, res) {
+  try {
+    res.json({ success: true, quota: await usage.readUsage(req.user) });
+  } catch (error) {
+    console.error("[assistant-usage] read failed", error?.message || error);
+    res.status(500).json({ success: false, message: "Could not read today's assistant usage." });
+  }
+}
+
+module.exports = { streamTurn, status, quotaStatus, validateMessages, errorPayload };
