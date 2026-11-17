@@ -8,6 +8,7 @@ const {
   getEmployeeView,
   getAccountList,
 } = require("../controllers/salesController");
+const { getClosings, getClosingBreakup } = require("../controllers/closingController");
 const { verifyToken } = require("../middleware/authMiddleware");
 
 const router = express.Router();
@@ -20,5 +21,7 @@ router.get("/employee-view", getEmployeeView);
 router.get("/account-list", getAccountList);
 router.get("/sales-report-count", getSalesReportCount);
 router.get("/sales-report-all", getSalesReportAll);
+router.get("/closings", getClosings);
+router.get("/closings/:tranNo/breakup", getClosingBreakup);
 
 module.exports = router;
