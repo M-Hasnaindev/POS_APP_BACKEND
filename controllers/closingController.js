@@ -2,17 +2,14 @@
 // DAILY CLOSING API (read-only)
 // GET /api/sales/closings?from=YYYY-MM-DD&to=YYYY-MM-DD&branch=
 // GET /api/sales/closings/:tranNo/breakup?branch=
-// The company always comes from the signed-in token, never from the request.
+// Company scope comes from the authenticated user/tenant, never the request.
 // ============================================
 
 const { sql, getPoolForTenant, sendDatabaseError } = require("../config/db");
+const { resolveAuthenticatedCompanyCode } = require("../services/accountingService");
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_RANGE_DAYS = 400;
-
-function companyOf(req) {
-  return String(req.user?.companyCode || "").trim();
-}
 
 function pakistanToday() {
   return new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -44,9 +41,6 @@ const closingGroup = (hasCardReturn) => `
   M.NoBill, M.NoCancel, M.NoHold, M.NoUnpaid, M.Paid`;
 
 const getClosings = async (req, res) => {
-  const companyCode = companyOf(req);
-  if (!companyCode) return res.status(400).json({ success: false, message: "Company is missing from the session." });
-
   const today = pakistanToday();
   const to = DATE_RE.test(String(req.query.to || "")) ? String(req.query.to) : today;
   const from = DATE_RE.test(String(req.query.from || "")) ? String(req.query.from) : to;
@@ -56,6 +50,7 @@ const getClosings = async (req, res) => {
 
   try {
     const pool = await getPoolForTenant(req.user.tenantId);
+    const companyCode = await resolveAuthenticatedCompanyCode(pool, req.user.userId, req.user.companyCode);
     // Older ERP schemas (including UROOJ TEST) have no CardReturn column.
     // Inspect this tenant's schema; never create/alter source tables or invent
     // a zero return amount for a field the source does not provide.
@@ -80,6 +75,7 @@ const getClosings = async (req, res) => {
 
     res.json({ success: true, from, to, data: result.recordset, count: result.recordset.length });
   } catch (error) {
+    if (error.statusCode === 401) return res.status(401).json({ success: false, message: error.message });
     console.log("❌ CLOSINGS ERROR:", error.message);
     sendDatabaseError(res, error, "Daily closings could not be loaded.");
   }
@@ -105,14 +101,13 @@ const BOOK_QUERY = (table, label) => `
   HAVING SUM(V.Debit) > 0`;
 
 const getClosingBreakup = async (req, res) => {
-  const companyCode = companyOf(req);
   const tranNo = String(req.params.tranNo || "").trim();
   const branch = String(req.query.branch || "").trim();
-  if (!companyCode) return res.status(400).json({ success: false, message: "Company is missing from the session." });
   if (!tranNo || !branch) return res.status(400).json({ success: false, message: "Closing number and branch are required." });
 
   try {
     const pool = await getPoolForTenant(req.user.tenantId);
+    const companyCode = await resolveAuthenticatedCompanyCode(pool, req.user.userId, req.user.companyCode);
     const result = await pool.request()
       .input("companyCode", sql.VarChar(50), companyCode)
       .input("tranNo", sql.VarChar(50), tranNo)
@@ -152,6 +147,7 @@ const getClosingBreakup = async (req, res) => {
     const sum = (section) => rows.filter((row) => row.section === section).reduce((total, row) => total + row.amount, 0);
     res.json({ success: true, tranNo, branch, rows, totals: { payments: sum("payment"), expenses: sum("expense") } });
   } catch (error) {
+    if (error.statusCode === 401) return res.status(401).json({ success: false, message: error.message });
     console.log("❌ CLOSING BREAKUP ERROR:", error.message);
     sendDatabaseError(res, error, "Closing breakup could not be loaded.");
   }

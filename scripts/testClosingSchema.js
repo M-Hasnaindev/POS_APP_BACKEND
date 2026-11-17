@@ -19,6 +19,7 @@ async function check(hasCardReturn) {
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../controllers/closingController.js'), 'utf8'), {
     module: mod, console,
     require(name) {
+      if (name === '../services/accountingService') return { resolveAuthenticatedCompanyCode: async (_pool, _user, company) => company };
       assert.equal(name, '../config/db');
       return { sql: { VarChar: () => 'varchar', Date: 'date' },
         getPoolForTenant: async id => { assert.equal(id, 'tenant_test'); return pool; },
