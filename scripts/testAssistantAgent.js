@@ -1,6 +1,7 @@
 // Business assistant agent proxy: request validation, tool definitions and missing-key handling.
 const assert = require("node:assert/strict");
-delete process.env.ANTHROPIC_API_KEY;
+// Empty (not deleted) so a later dotenv load cannot put the real key back.
+process.env.ANTHROPIC_API_KEY = "";
 const agent = require("../services/assistantAgent");
 const { SYSTEM_PROMPT, TOOLS, TOOL_NAMES } = require("../services/assistantAgentPrompt");
 
@@ -26,7 +27,8 @@ assert.match(agent.validateMessages(Array.from({ length: 161 }, () => user)), /t
 
 // Without a key the endpoint answers 503 AI_NOT_CONFIGURED (no streaming started).
 const res = { code: 0, body: null, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
-agent.streamTurn({ body: { messages: [user] } }, res);
+(async () => {
+await agent.streamTurn({ body: { messages: [user] } }, res);
 assert.equal(res.code, 503);
 assert.equal(res.body.code, "AI_NOT_CONFIGURED");
 
@@ -36,3 +38,4 @@ const A = Anthropic.default || Anthropic;
 assert.equal(agent.errorPayload(new A.APIConnectionError({ message: "x" })).code, "AI_UNREACHABLE");
 assert.equal(agent.errorPayload(new Error("x")).code, "AI_FAILED");
 console.log("assistant agent tests passed");
+})().catch((error) => { console.error(error); process.exitCode = 1; });
