@@ -37,5 +37,8 @@ const Anthropic = require("@anthropic-ai/sdk");
 const A = Anthropic.default || Anthropic;
 assert.equal(agent.errorPayload(new A.APIConnectionError({ message: "x" })).code, "AI_UNREACHABLE");
 assert.equal(agent.errorPayload(new Error("x")).code, "AI_FAILED");
+const billing = new A.BadRequestError(400, { type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API." } }, "Your credit balance is too low to access the Anthropic API.", new Headers());
+assert.equal(agent.errorPayload(billing).code, "AI_BILLING", "an empty AI balance is reported as billing, not a broken chat");
+assert.equal(agent.errorPayload(new A.BadRequestError(400, {}, "messages: invalid", new Headers())).code, "AI_BAD_REQUEST");
 console.log("assistant agent tests passed");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

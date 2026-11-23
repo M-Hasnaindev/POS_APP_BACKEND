@@ -60,6 +60,10 @@ function errorPayload(error) {
     return { code: "AI_AUTH", message: "The AI key is not valid. Please check the assistant settings." };
   if (error instanceof AnthropicClient.RateLimitError)
     return { code: "AI_RATE_LIMIT", message: "The AI is busy right now. Please try again in a minute." };
+  // Anthropic reports an empty prepaid balance as a 400; it is an account
+  // problem, not a broken chat, so say so instead of asking for a new chat.
+  if (error instanceof AnthropicClient.BadRequestError && /credit balance|billing|purchase credits/i.test(String(error?.message || "")))
+    return { code: "AI_BILLING", message: "The AI service account has run out of credit. Please ask the admin to top up the AI account." };
   if (error instanceof AnthropicClient.BadRequestError)
     return { code: "AI_BAD_REQUEST", message: "The AI could not read this chat. Please start a new chat." };
   if (error instanceof AnthropicClient.APIConnectionError)
