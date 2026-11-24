@@ -5,6 +5,9 @@ const {loadAccountingFilterOptions}=require('./accountingFilterOptions');
 const {createIncomeReportCache}=require('./incomeReportCache');
 const {withSqlDeadline}=require('./sqlDeadline');
 const cachedIncomeReport=createIncomeReportCache();
+// How long a report waits for another report or sync on the same company database.
+const REPORT_LOCK_WAIT_MS=45000;
+const reportBusy=()=>Object.assign(new Error('Another report or data sync is running for this company. Please retry in a minute.'),{statusCode:503,code:'REPORT_BUSY'});
 const error=(message,statusCode=422,code='INVALID_REPORT_FILTER')=>Object.assign(new Error(message),{statusCode,code});
 const TYPES={'income-statement':'I','accounting-ledger':'L','trial-balance':'T','trial-balance-six-column':'T','account-movement':'M','audit-trial':'A','month-wise-account':'MWR','month-wise-expense':'MWR','month-wise-cash-bank':'MWR','daily-cash-bank-flow':'DAILYCASH','party-wise-collection':'PWC','party-wise-payment':'PWP','receivable-aging':'BILLWISE','payable-aging':'BILLWISE','chart-of-accounts':'COA','cash-bank-position':'B'};
 const UNVERIFIED=['balance-sheet','post-dated-cheques'];
@@ -72,7 +75,12 @@ async function executeReportPlan(pool,context,id,plan,options,deadline){
    // Match the ERP's committed-read semantics. SERIALIZABLE kept range locks
    // across every source table until the report finished, blocking live sales.
    await transaction.begin(sql.ISOLATION_LEVEL.READ_COMMITTED);begun=true;
-   await new sql.Request(transaction).query("DECLARE @r int; EXEC @r=sys.sp_getapplock @Resource='POSAccountingReports',@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=10000; IF @r<0 THROW 51000,'Report is busy. Retry shortly.',1;");
+   // One report or sync per company database at a time (AccProc shares working
+   // tables). Stock and accounting syncs hold this lock for a while, so a report
+   // waits in line instead of failing after a few seconds.
+   const lockWait=Math.max(1000,Math.min(REPORT_LOCK_WAIT_MS,deadline?deadline-Date.now()-60000:REPORT_LOCK_WAIT_MS));
+   try{await new sql.Request(transaction).input('lockWait',sql.Int,lockWait).query("DECLARE @r int; EXEC @r=sys.sp_getapplock @Resource='POSAccountingReports',@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=@lockWait; IF @r<0 THROW 51000,'Report is busy. Retry shortly.',1;");}
+   catch(err){if(err?.number===51000)throw reportBusy();throw err;}
    if(plan.procedure==='AccProc')await new sql.Request(transaction).input('userId',sql.NVarChar(100),context.userId).query("IF OBJECT_ID('TmpStores') IS NOT NULL DELETE FROM TmpStores WHERE UserID=@userId; IF OBJECT_ID('Tmp_Branch') IS NOT NULL DELETE FROM Tmp_Branch WHERE UserID=@userId;");
    const request=new sql.Request(transaction);plan.params.forEach((value,index)=>request.input('p'+index,sql.NVarChar(sql.MAX),value));request.timeout=deadline?Math.max(1,Math.min(80000,deadline-Date.now())):80000;
    const result=await withSqlDeadline(request,request.timeout,()=>request.query('EXEC '+plan.procedure+' '+plan.params.map((_,i)=>'@p'+i).join(', ')));rows=result.recordset||[];
@@ -87,4 +95,4 @@ async function executeReportPlan(pool,context,id,plan,options,deadline){
  if(id==='income-statement')incomeStatement=await loadIncomeStatement(pool,{rows,columnMappings,params:plan.params,options,deadline});
  return {rows:incomeStatement?[]:rows,columnMappings:incomeStatement?{branches:[],accounts:[]}:columnMappings,...(incomeStatement?{incomeStatement}:{}),reportId:id,procedure:plan.procedure,reportType:plan.reportType,companyCode:context.companyCode,generatedAt:new Date().toISOString()};
 }
-module.exports={buildReportPlan,executeAccountingReport,TYPES,UNVERIFIED};
+module.exports={buildReportPlan,executeAccountingReport,TYPES,UNVERIFIED,REPORT_LOCK_WAIT_MS};
