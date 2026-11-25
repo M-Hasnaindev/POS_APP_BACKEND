@@ -35,11 +35,13 @@ function buildTenant(index) {
     keyExpiresAt,
     label: optional(`${prefix}_LABEL`, `Company ${index}`),
     config: {
-      user: optional(`${prefix}_USER`, required("DB_USER")),
-      password: optional(`${prefix}_PASSWORD`, required("DB_PASSWORD")),
-      server: optional(`${prefix}_SERVER`, required("DB_SERVER")),
+      // A tenant's own DB_n_* value wins; the shared DB_* value is only needed
+      // (and only required) when the tenant does not set its own.
+      user: optional(`${prefix}_USER`) || required("DB_USER"),
+      password: optional(`${prefix}_PASSWORD`) || required("DB_PASSWORD"),
+      server: optional(`${prefix}_SERVER`) || required("DB_SERVER"),
       database,
-      port: Number(optional(`${prefix}_PORT`, required("DB_PORT"))),
+      port: Number(optional(`${prefix}_PORT`) || required("DB_PORT")),
       options: {
         encrypt: optional(`${prefix}_ENCRYPT`, "false").toLowerCase() === "true",
         trustServerCertificate:
